@@ -1,0 +1,80 @@
+cabal-version:      2.4
+name:               ccmsg
+version:            0.1.0.0
+
+-- A short (one-line) description of the package.
+-- synopsis:
+
+-- A longer description of the package.
+-- description:
+
+-- A URL where users can report bugs.
+-- bug-reports:
+
+license:             BSD3
+license-file:        LICENSE
+author:             octalsrc
+maintainer:         nicklewchenko92@gmail.com
+
+-- A copyright notice.
+-- copyright:
+-- category:
+extra-source-files: CHANGELOG.md
+
+library
+    exposed-modules:  Network.Ccm
+                    , Network.Ccm.TCP
+                    , Network.Ccm.Types
+                    , Network.Ccm.Bsm
+                    , Network.Ccm.Bsm.Inbox
+                    , Network.Ccm.Bsm.Internal
+                    , Network.Ccm.Bsm.Multi
+                    , Network.Ccm.Bsm.Outbox
+                    , Network.Ccm.Bsm.UDP
+                    , Network.Ccm.Lens
+                    , Network.Ccm.State
+                    , Network.Ccm.VClock
+
+    -- Modules included in this library but not exported.
+    -- other-modules:
+
+    -- LANGUAGE extensions used by modules in this package.
+    -- other-extensions:
+    build-depends:    base ^>=4.17.2
+                    , containers
+                    , aeson
+                    , bytestring
+                    , iproute
+                    , microlens-platform
+                    , mtl
+                    , network
+                    , network-simple
+                    , network-udp
+                    , serialise
+                    , stm
+                    , store
+                    , time
+    hs-source-dirs:   src
+    default-language: Haskell2010
+
+executable ccmsg
+    main-is:          Main.hs
+
+    -- Modules included in this executable, other than Main.
+    other-modules:    Config, State
+
+    -- LANGUAGE extensions used by modules in this package.
+    -- other-extensions:
+    build-depends:    base ^>=4.17.2
+                    , ccmsg
+                    , bytestring
+                    , dhall
+                    , store
+                    , stm
+                    , mtl
+                    , containers
+                    , text
+                    , time
+
+    hs-source-dirs:   app
+    default-language: Haskell2010

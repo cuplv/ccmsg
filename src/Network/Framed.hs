@@ -1,6 +1,6 @@
 {-# LANGUAGE FlexibleContexts #-}
 
-module Network.Frame32
+module Network.Framed
   ( send
   , sendStrict
   , recv

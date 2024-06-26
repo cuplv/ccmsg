@@ -19,6 +19,9 @@ class (Monad m) => MonadLog l m | m -> l where
   dlog :: l -> String -> m ()
   -- ^ Log a 'String' at the given level.
 
+instance (MonadLog l m) => MonadLog l (ExceptT e m) where
+  dlog l s = lift $ dlog l s
+
 -- | A 'MonadLog' that prints logs to stdout.
 newtype LogPrint l m a = LogPrint { runLogPrint' :: ReaderT (l,String) m a }
 

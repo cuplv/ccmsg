@@ -94,20 +94,6 @@ sendStrict
   -> m ()
 sendStrict sock content = send sock (LBS.fromStrict content)
 
--- data RecvException
---   = SocketClosed Int Int
---     -- ^ The socket closed or EOF'd before the expected size message
---     -- was received.  The first 'Int' is how many bytes were received,
---     -- and the second is how many were expected.
---   | LengthDecode String
---     -- ^ The message's leading length, an 'Int32' in big-endian order,
---     -- could not be decoded.  The 'String' provides details.
---   | ContentDecode String
---     -- ^ The message's content could not be decoded.
---   | RecvNetwork NetworkException
---     -- ^ A network exception arose
---   deriving (Show,Eq,Ord)
-
 -- | Receive a message from the socket, or a 'RecvException' if
 -- unsuccessful.
 recv

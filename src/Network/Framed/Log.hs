@@ -5,12 +5,13 @@
 
 module Network.Framed.Log
   ( MonadLog (..)
-  , LogPrint
-  , runLogPrint
   , LogIO
   , runLogIO
+  , runLogStdout
+  , runLogTQueue
   ) where
 
+import Control.Concurrent.STM
 import Control.Monad.Except
 import Control.Monad.Reader
 
@@ -49,12 +50,8 @@ instance (MonadIO m, Ord l) => MonadLog l (LogPrint l m) where
       then liftIO . putStrLn $ "[" ++ prefix ++ "] " ++ s
       else return ()
 
--- | Run a 'LogPrint' that only prints logs at the given level or
--- lower.  The provided 'String' is used as a prefix.
-runLogPrint :: LogPrint l m a -> l -> String -> m a
-runLogPrint (LogPrint m) l s = runReaderT m (l,s)
-
--- | A 'MonadLog' that applies an arbitrary 'IO' action to logs.
+-- | A 'MonadLog' that applies an 'IO' action to logs within a given
+-- level.
 newtype LogIO l m a = LogIO { runLogIO' :: ReaderT (l, String -> IO ()) m a }
 
 instance (Functor m) => Functor (LogIO l m) where
@@ -85,7 +82,19 @@ instance (MonadIO m, Ord l) => MonadLog l (LogIO l m) where
       then liftIO $ action s
       else return ()
 
--- | Run a 'LogIO' that only calls the action on logs at the given
--- level or lower.
+-- | Run a 'LogIO' for the given level and action.
 runLogIO :: LogIO l m a -> l -> (String -> IO ()) -> m a
 runLogIO (LogIO m) l f = runReaderT m (l,f)
+
+-- | Run a 'LogIO' that prints logs to stdout. The provided 'String'
+-- is used as a prefix.
+runLogStdout :: LogIO l m a -> l -> String -> m a
+runLogStdout (LogIO m) l prefix =
+  let action s = putStrLn $ "[" ++ prefix ++ "] " ++ s
+  in runReaderT m (l,action)
+
+-- | Run a 'LogIO' that writes logs to a 'TQueue'.
+runLogTQueue :: LogIO l m a -> l -> TQueue String -> m a
+runLogTQueue (LogIO m) l queue =
+  let action s = atomically $ writeTQueue queue s
+  in runReaderT m (l,action)

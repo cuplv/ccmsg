@@ -15,68 +15,43 @@ hello = mconcat $ replicate 4500 "Hello world!"
 goodbye = "Goodbye world!"
 
 main :: IO ()
-main = getArgs >>= \case
-  ["send"] -> sender
-  ["recv"] -> recver
-  ["both"] -> both
+main = do
+  [lvl,command] <- getArgs
+  flip runLogStdoutC (read lvl) $ do
+    case command of
+      "send" -> sender
+      "recv" -> recver
+      "both" -> do
+        liftIO . forkIO =<< passLogIO sender
+        recver
+      _ -> dlog 0 "Unrecognized command"
 
-sender :: IO ()
-sender = TCP.connect "127.0.0.1" "7720" $ \(sock,_) -> do
-  let
-    loop = do
-      Framed.send sock hello
-      dlog 1 "Sent the message."
-      liftIO $ threadDelay 200000
-      loop
-  result <- runExceptT (runLogStdout (loop) 1 "sender")
-  print (result :: Either Framed.Exception ())
-
-recver = TCP.serve "127.0.0.1" "7720" $ \(sock,_) -> do
-  let
-    recvLoop = do
-      Framed.recv sock >>= \case
-        msg | msg == hello -> do
-          dlog 1 "Got the message."
-          recvLoop
-        _ -> do
-          dlog 1 "Got some other message."
-          recvLoop
-  result <- runExceptT (runLogStdout recvLoop 1 "recver")
-  print (result :: Either Framed.Exception ())
-
-both :: IO ()
-both = do
-  q <- newTQueueIO
-
-  forkIO $ TCP.serve "127.0.0.1" "7720" $ \(sock,_) -> do
+sender :: LogIO Int IO ()
+sender = do
+  f <- passLogIOF $ \(sock,_) -> do
     let
-      recvLoop = do
-        Framed.recv sock >>= \case
-          msg | msg == hello -> do
-            dlog 1 "Got the message."
-            recvLoop
-          _ -> do
-            dlog 1 "Got some other message."
-            recvLoop
-    runExceptT (runLogTQueue recvLoop 1 q)
-    return ()
-
-  liftIO $ threadDelay 200000
-
-  forkIO $ TCP.connect "127.0.0.1" "7720" $ \(sock,_) -> do
-    let
-      sendLoop = do
+      step = do
         Framed.send sock hello
         dlog 1 "Sent the message."
         liftIO $ threadDelay 200000
-        sendLoop
-    runExceptT (runLogTQueue sendLoop 1 q)
-    return ()
+    result <- runExceptT $ forever step
+    dlog 0 $
+      "Sender ended with "
+      ++ show (result :: Either Framed.Exception ())
+  liftIO . TCP.connect "127.0.0.1" "7720" $ f
 
-  let
-    logLoop = do
-      s <- liftIO . atomically $ readTQueue q
-      liftIO $ putStrLn s
-      logLoop
-
-  logLoop
+recver :: LogIO Int IO ()
+recver = do
+  f <- passLogIOF $ \(sock,_) -> do
+    let
+      step = do
+        Framed.recv sock >>= \case
+          msg | msg == hello -> do
+            dlog 1 "Got the message."
+          _ -> do
+            dlog 1 "Got some other message."
+    result <- runExceptT $ forever step
+    dlog (0 :: Int) $
+      "Receiver ended with "
+      ++ show (result :: Either Framed.Exception ())
+  liftIO . TCP.serve "127.0.0.1" "7720" $ f

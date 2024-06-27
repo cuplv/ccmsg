@@ -2,7 +2,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 import qualified Network.Framed as Framed
-import Network.Framed.Log
+import Control.Monad.DebugLog
 
 import Control.Concurrent (threadDelay, forkIO)
 import Control.Concurrent.STM

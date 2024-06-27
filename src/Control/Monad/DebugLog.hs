@@ -3,7 +3,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-module Network.Framed.Log
+module Control.Monad.DebugLog
   ( MonadLog (..)
   , LogIO
   , runLogIO
@@ -14,12 +14,23 @@ module Network.Framed.Log
 import Control.Concurrent.STM
 import Control.Monad.Except
 import Control.Monad.Reader
+import Control.Monad.State (StateT)
+import Control.Monad.Writer (WriterT)
 
 class (Monad m) => MonadLog l m | m -> l where
   dlog :: l -> String -> m ()
   -- ^ Log a 'String' at the given level.
 
 instance (MonadLog l m) => MonadLog l (ExceptT e m) where
+  dlog l s = lift $ dlog l s
+
+instance (MonadLog l m) => MonadLog l (ReaderT r m) where
+  dlog l s = lift $ dlog l s
+
+instance (MonadLog l m) => MonadLog l (StateT s m) where
+  dlog l s = lift $ dlog l s
+
+instance (MonadLog l m, Monoid w) => MonadLog l (WriterT w m) where
   dlog l s = lift $ dlog l s
 
 -- | A 'MonadLog' that prints logs to stdout.

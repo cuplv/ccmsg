@@ -34,7 +34,7 @@ library
                     , Network.Ccm.State
                     , Network.Ccm.VClock
                     , Network.Framed
-                    , Network.Framed.Log
+                    , Control.Monad.DebugLog
 
     -- Modules included in this library but not exported.
     -- other-modules:

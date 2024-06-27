@@ -13,6 +13,8 @@ module Network.Framed
   , sendStrict
   , recvStrict
   , recvUntilStrict
+  -- * Other Operations
+  , recvWord16
   -- * Exceptions
   , Exception (..)
   -- * Re-exports
@@ -39,6 +41,16 @@ word16Size = 2
 -- bytes.
 recvUntil :: (MonadError Exception m, MonadIO m) => TCP.Socket -> Word16 -> m (Either Word16 LBS.ByteString)
 recvUntil sock n = fmap LBS.fromChunks <$> recvUntilChunks sock n
+
+recvWord16 :: (MonadError Exception m, MonadIO m) => TCP.Socket -> m Word16
+recvWord16 sock = do
+  sizeB <- recvUntilStrict sock word16Size
+  case sizeB of
+    Left n -> throwError $ LengthEOF n word16Size
+    Right bs -> do
+      case Cereal.runGet Cereal.getWord16be bs of
+        Right n -> return n
+        Left e -> throwError $ LengthDecode e
 
 -- | Strict 'Data.ByteString.ByteString' version of 'recvUntil'.
 recvUntilStrict :: (MonadError Exception m, MonadIO m) => TCP.Socket -> Word16 -> m (Either Word16 SBS.ByteString)

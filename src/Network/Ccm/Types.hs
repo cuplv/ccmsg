@@ -7,6 +7,7 @@ module Network.Ccm.Types
   , NodeMap
   , SeqNum
   , Debugger
+  , mkIODbg
   , mkPrinterDbg
   , mkNoDebugDbg
   , runQD
@@ -44,12 +45,16 @@ data Debugger
   = Debugger (TQueue String)
   | Printer
   | NoDebug
+  | IODebugger (String -> IO ())
 
 debug :: Debugger -> String -> IO ()
 debug d s = case d of
   Debugger chan -> atomically $ writeTQueue chan s
   Printer -> putStrLn s
   NoDebug -> return ()
+  IODebugger f -> f s
+
+mkIODbg = IODebugger
 
 mkPrinterDbg = Printer
 

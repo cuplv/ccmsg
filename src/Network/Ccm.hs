@@ -28,6 +28,7 @@ module Network.Ccm
   , CausalError (..)
   , showCausalError'
   , Debugger
+  , mkIODbg
   , mkPrinterDbg
   , mkNoDebugDbg
   , runQD

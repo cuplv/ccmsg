@@ -26,6 +26,7 @@ data MyAddr
   = MyAddr { myAddrHost :: HostName
            , myAddrPort :: ServiceName
            }
+  deriving (Show)
 
 runServer :: Debugger -> MyAddr -> BsmInbox -> Map NodeId (BsmOutbox,TVar Bool) -> IO ()
 runServer dbg myaddr inbox outboxes = do

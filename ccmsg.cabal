@@ -41,7 +41,7 @@ library
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
-    build-depends:    base ^>=4.17.2
+    build-depends:    base >=4.17.2 && <4.19
                     , cereal
                     , containers
                     , aeson
@@ -66,7 +66,7 @@ executable ccmsg
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
-    build-depends:    base ^>=4.17.2
+    build-depends:    base >=4.17.2 && <4.19
                     , ccmsg
                     , bytestring
                     , dhall

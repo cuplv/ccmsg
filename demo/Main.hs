@@ -6,7 +6,9 @@ import Control.Monad.DebugLog
 
 import Control.Concurrent (threadDelay, forkIO)
 import Control.Concurrent.STM
+import Control.Monad
 import Control.Monad.Except
+import Control.Monad.IO.Class
 import qualified Network.Simple.TCP as TCP
 import System.Environment (getArgs)
 

@@ -16,6 +16,7 @@ module Control.Monad.DebugLog
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.STM
+import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
 import Control.Monad.State (StateT)

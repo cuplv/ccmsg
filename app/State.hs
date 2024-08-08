@@ -17,7 +17,6 @@ data ExState
     , _stReceived :: Map NodeId Int
     , _stConf :: NodeConfig
     , _stDebugger :: Debugger
-    , _stSeenErrors :: Int
     }
 
 makeLenses ''ExState
@@ -32,7 +31,6 @@ exStateInit d c = ExState
   , _stReceived = Map.empty
   , _stConf = c
   , _stDebugger = d
-  , _stSeenErrors = 0
   }
 
 runExT :: (MonadIO m) => ExT m a -> Debugger -> NodeConfig -> m a

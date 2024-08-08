@@ -78,18 +78,22 @@ getOthers = getRemoteNodeIds <$> ask
 
   This function may block if the outgoing transport queue is full.
 -}
-blockSend :: ByteString -> CcmT STM ()
+blockSend :: (MonadIO m) => ByteString -> CcmT m ()
 blockSend content = do
   local <- lift $ use localClock
-  encodeAndBcast (local,content)
-
-encodeAndBcast :: (VClock, ByteString) -> CcmT STM ()
-encodeAndBcast (clock,appContent) = do
   bsm <- ask
-  let self = getBsmSelfId bsm
-  let msg = mkCausalAppMsg clock appContent
+  self <- getSelf
+  let msg = mkCausalAppMsg local content
   lift $ recordSend (self,msg)
-  lift.lift $ sendBsm bsm SendAll (Store.encode (msg :: AppMsg))
+  liftIO . atomically $ sendBsm bsm SendAll (Store.encode (msg :: AppMsg))
+
+-- encodeAndBcast :: (VClock, ByteString) -> CcmT STM ()
+-- encodeAndBcast (clock,appContent) = do
+--   bsm <- ask
+--   let self = getBsmSelfId bsm
+--   let msg = mkCausalAppMsg clock appContent
+--   lift $ recordSend (self,msg)
+--   lift.lift $ sendBsm bsm SendAll (Store.encode (msg :: AppMsg))
 
 {-| Decode and attempt to deliver a causal message, possibly delivering
   additional retried messages as a result. -}

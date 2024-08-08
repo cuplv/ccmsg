@@ -30,6 +30,9 @@ data BsmMulti
              , bsmSelf :: NodeId
              }
 
+isEmptyInbox :: BsmMulti -> STM Bool
+isEmptyInbox = isEmptyBsmInbox . bsmInbox
+
 getRemoteNodeIds :: BsmMulti -> Set NodeId
 getRemoteNodeIds bsm = Set.delete (bsmSelf bsm) $ Map.keysSet (bsmTargets bsm)
 
@@ -54,6 +57,9 @@ getFromInbox sock = readBsmInbox (bsmInbox sock)
 
 getManyFromInbox :: BsmMulti -> STM [(NodeId, ByteString)]
 getManyFromInbox sock = readManyBsmInbox (bsmInbox sock)
+
+tryGetManyFromInbox :: BsmMulti -> STM [(NodeId, ByteString)]
+tryGetManyFromInbox sock = tryReadManyBsmInbox (bsmInbox sock)
 
 sendBsm :: BsmMulti -> SendTarget -> ByteString -> STM ()
 sendBsm bsm t bs =

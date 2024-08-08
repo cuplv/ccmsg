@@ -5,14 +5,8 @@ module Network.Ccm
   , getSelf
   , getOthers
   , blockSend
-  , blockRecv
-  , allReadyCcm
-  , awaitAllSent
+  , tryRecv
   , runCcm
-  , stmCcm
-  , atomicallyCcm
-  , atomicallyCcmTimedMicros
-  , orElseCcm
   , RClock
   , zeroRClock
   , MyAddr (..)
@@ -28,6 +22,11 @@ module Network.Ccm
   , runQD'
   , debug
   , liftIO
+  , Context
+  , context
+  , allPeersReady
+  , newNetworkActivity
+  , sendsComplete
   ) where
 
 import Network.Ccm.Bsm
@@ -124,28 +123,22 @@ handleCausalMsg (sender, rawContent) = do
       ccmStats . totalOutOfOrder += 1
       return $ Left e
 
-{-| Receive casually-ordered messages.
+{-| Receive any causally-ordered messages that are available.
 
-  This function blocks until at least one message is available.  To
-  avoid blocking, first check that messages are available using
-  'inboxEmpty'.
+  This function will not block.  To block until messages are
+  available, use 'Control.Concurrent.STM.check' with
+  'newNetworkActivity'.
 -}
-blockRecv :: (MonadIO m) => CcmT m (Seq ByteString)
-blockRecv = do
+tryRecv :: (MonadIO m) => CcmT m (Seq ByteString)
+tryRecv = do
   bsm <- ask
-  rawMsgs <- liftIO . atomically $ getManyFromInbox bsm
+  rawMsgs <- liftIO . atomically $ tryGetManyFromInbox bsm
   let h ms raw = do
         result <- handleCausalMsg raw
         case result of
           Right ms' -> return (ms Seq.>< ms')
           Left e -> return ms
   foldlM h Seq.empty rawMsgs
-
-{-| Check that all nodes are connected and ready to receive messages. -}
-allReadyCcm :: CcmT STM Bool
-allReadyCcm = do
-  bsm <- ask
-  lift.lift $ allReady bsm
 
 {-| Run a 'CcmT' computation.  This needs 'IO' in order to operate TCP
   connections and such. -}
@@ -159,74 +152,29 @@ runCcm d self addrs comp = do
   bsm <- liftIO $ runBsmMulti d self addrs
   evalStateT (runReaderT comp bsm) newCcmState
 
-{-| Lift an 'STM' transaction into the 'CcmT' monad. -}
-stmCcm :: STM a -> CcmT STM a
-stmCcm = lift.lift
-
-{-| Transform a 'STM'-based computation into an 'IO'-based computation. -}
-atomicallyCcm :: (MonadIO m) => CcmT STM a -> CcmT m a
-atomicallyCcm m = do
-  bsm <- ask
-  s1 <- lift $ use id
-  let stm = runStateT (runReaderT m bsm) s1
-  (a,s2) <- lift.lift.liftIO.atomically $ stm
-  lift $ id .= s2
-  return a
-
-{-| Transform a 'STM'-based computation into an 'IO'-based computation,
-  which will cancel after the given number of microseconds. -}
-atomicallyCcmTimedMicros :: (MonadIO m) => Maybe Int -> CcmT STM a -> CcmT m (Maybe a)
-atomicallyCcmTimedMicros mms m = case mms of
-  Just micros -> do
-    v <- liftIO $ newEmptyTMVarIO
-    tid <- liftIO . forkIO $ do
-      threadDelay micros
-      atomically $ putTMVar v ()
-
-    bsm <- ask
-    s1 <- lift $ use id
-    let stm =
-          (Just <$> runStateT (runReaderT m bsm) s1)
-          `orElse`
-          (const Nothing <$> takeTMVar v)
-    result <- lift.lift.liftIO.atomically $ stm
-    case result of
-      Just (a,s2) -> do
-        liftIO $ killThread tid
-        lift $ id .= s2
-        return $ Just a
-      Nothing -> return Nothing
-  Nothing -> Just <$> atomicallyCcm m
-
-{-| Try the first transaction.  If it calls 'retry', do the second one
-  instead.  This is a lifted version of 'orElse' from 'STM'. -}
-orElseCcm
-  :: CcmT STM a
-  -> CcmT STM a
-  -> CcmT STM a
-orElseCcm m1 m2 = do
-  bsm <- ask
-  s1 <- lift $ use id
-  let
-    stm1 = runStateT (runReaderT m1 bsm) s1
-    stm2 = runStateT (runReaderT m2 bsm) s1
-  (a,s2) <- lift.lift $ orElse stm1 stm2
-  lift $ id .= s2
-  return a
-
-{-| Blocks until send-queue is empty.  Call this before shutting down,
-  in order to avoid sent messages getting cut off before they are
-  actually transmitted. -}
-awaitAllSent :: CcmT STM ()
-awaitAllSent = do
-  bsm <- ask
-  stmCcm $ check =<< checkAllSent bsm
-
 data Context
-  = Context { ctxInboxEmpty :: STM Bool }
+  = Context { ctxInboxEmpty :: STM Bool
+            , ctxAllReady :: STM Bool
+            , ctxOutboxEmpty :: STM Bool
+            }
 
-inboxEmpty :: Context -> STM Bool
-inboxEmpty = ctxInboxEmpty
+{-| Check that all peers are connected and ready to receive messages. -}
+allPeersReady :: Context -> STM Bool
+allPeersReady = ctxAllReady
+
+{-| Check whether any messages are ready to be processed. -}
+newNetworkActivity :: Context -> STM Bool
+newNetworkActivity ctx = not <$> ctxInboxEmpty ctx
+
+{-| Check whether any sent messages are still waiting to be transmitted. -}
+sendsComplete :: Context -> STM Bool
+sendsComplete = ctxOutboxEmpty
 
 context :: (Monad m) => CcmT m Context
-context = undefined
+context = do
+  bsm <- ask
+  return $ Context
+    { ctxInboxEmpty = isEmptyInbox bsm
+    , ctxAllReady = allReady bsm
+    , ctxOutboxEmpty = checkAllSent bsm
+    }

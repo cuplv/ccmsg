@@ -3,7 +3,9 @@ module Network.Ccm.Bsm.Inbox
   , newBsmInbox
   , readBsmInbox
   , readManyBsmInbox
+  , tryReadManyBsmInbox
   , writeBsmInbox
+  , isEmptyBsmInbox
   ) where
 
 import Network.Ccm.Types
@@ -14,12 +16,20 @@ import Data.ByteString (ByteString)
 
 data BsmInbox = BsmInbox (TBQueue (NodeId, ByteString))
 
+{-| Read all available messages, or block if none. -}
 readManyBsmInbox :: BsmInbox -> STM [(NodeId, ByteString)]
 readManyBsmInbox (BsmInbox chan) = do
   e <- isEmptyTBQueue chan
   if e
     then retry
     else flushTBQueue chan
+
+{-| Read all available messages, or return @[]@ if there are none. -}
+tryReadManyBsmInbox :: BsmInbox -> STM [(NodeId, ByteString)]
+tryReadManyBsmInbox (BsmInbox chan) = flushTBQueue chan
+
+isEmptyBsmInbox :: BsmInbox -> STM Bool
+isEmptyBsmInbox (BsmInbox chan) = isEmptyTBQueue chan
 
 readBsmInbox :: BsmInbox -> STM (NodeId, ByteString)
 readBsmInbox (BsmInbox chan) = readTBQueue chan

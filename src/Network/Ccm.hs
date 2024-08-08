@@ -4,15 +4,8 @@ module Network.Ccm
   ( CcmT
   , getSelf
   , getOthers
-  , SendTarget (..)
-  , sendCcm
-  , sendToCcm
-  -- , sendCcm'
-  -- , recvCcm
-  -- , recvCcm'
-  , recvManyCcm
-  , recvManyCcmA
-  , recvManyCcmB
+  , blockSend
+  , blockRecv
   , allReadyCcm
   , awaitAllSent
   , runCcm
@@ -82,23 +75,17 @@ getSelf = getBsmSelfId <$> ask
 getOthers :: (Monad m) => CcmT m (Set NodeId)
 getOthers = getRemoteNodeIds <$> ask
 
-{-| Send a message, using the most recent local clock.  This has the
-  potential to create causal dependencies that are stricter (less
-  efficient) than necessary.  'sendCcm'' is potentially more
-  efficient. -}
-sendCcm :: ByteString -> CcmT STM ()
-sendCcm = sendToCcm SendAll
+{-| Send a message, which causally follows all messages received so-far.
 
-{-| Send a message to a specific target.  If causal consistency is being
-  enforced, this results in a broadcast anyway. -}
-sendToCcm :: SendTarget -> ByteString -> CcmT STM ()
-sendToCcm target content = do
-  -- Use local clock for message.
+  This function may block if the outgoing transport queue is full.
+-}
+blockSend :: ByteString -> CcmT STM ()
+blockSend content = do
   local <- lift $ use localClock
-  encodeAndBcastCausal (local,content)
+  encodeAndBcast (local,content)
 
-encodeAndBcastCausal :: (VClock, ByteString) -> CcmT STM ()
-encodeAndBcastCausal (clock,appContent) = do
+encodeAndBcast :: (VClock, ByteString) -> CcmT STM ()
+encodeAndBcast (clock,appContent) = do
   bsm <- ask
   let self = getBsmSelfId bsm
   let msg = mkCausalAppMsg clock appContent
@@ -130,43 +117,29 @@ handleCausalMsg (sender, rawContent) = do
               ++ show e
   result <- lift $ tryDeliver (sender,msg)
   case result of
-    Right (_, dmsgs) ->
+    Right (_, dmsgs) -> do
+      ccmStats . totalInOrder += 1
       return $ Right dmsgs
-    Left e ->
+    Left e -> do
+      ccmStats . totalOutOfOrder += 1
       return $ Left e
 
-recvManyCcmA :: CcmT STM [(NodeId, ByteString)]
-recvManyCcmA = do
-  bsm <- ask
-  stmCcm $ getManyFromInbox bsm
+{-| Receive casually-ordered messages.
 
-recvManyCcmB
-  :: (MonadIO m)
-  => [(NodeId, ByteString)]
-  -> CcmT m (Int, Seq ByteString)
-recvManyCcmB rawMsgs = do
-  let h (ds,ms) raw = do
+  This function blocks until at least one message is available.  To
+  avoid blocking, first check that messages are available using
+  'inboxEmpty'.
+-}
+blockRecv :: (MonadIO m) => CcmT m (Seq ByteString)
+blockRecv = do
+  bsm <- ask
+  rawMsgs <- liftIO . atomically $ getManyFromInbox bsm
+  let h ms raw = do
         result <- handleCausalMsg raw
         case result of
-          Right ms' -> return (ds, ms Seq.>< ms')
-          Left e -> return (ds + 1, ms)
-  foldlM h (0, Seq.empty) rawMsgs
-
-recvManyCcm :: (MonadIO m) => CcmT m (Int, Seq ByteString)
-recvManyCcm = atomicallyCcm recvManyCcmA >>= recvManyCcmB
--- recvManyCcm = do
---   bsm <- ask
---   rawMsgs <- liftIO . atomically $ getManyFromInbox bsm
---   causal <- use ccmEnforceCausal
---   let h (ds,ms) raw | not causal = do
---         m <- handleSimpleMsg raw
---         return (ds, ms Seq.|> m)
---       h (ds,ms) raw | causal = do
---         result <- handleCausalMsg raw
---         case result of
---           Right ms' -> return (ds, ms Seq.>< ms')
---           Left e -> return (ds + 1, ms)
---   foldlM h (0, Seq.empty) rawMsgs
+          Right ms' -> return (ms Seq.>< ms')
+          Left e -> return ms
+  foldlM h Seq.empty rawMsgs
 
 {-| Check that all nodes are connected and ready to receive messages. -}
 allReadyCcm :: CcmT STM Bool
@@ -248,3 +221,12 @@ awaitAllSent :: CcmT STM ()
 awaitAllSent = do
   bsm <- ask
   stmCcm $ check =<< checkAllSent bsm
+
+data Context
+  = Context { ctxInboxEmpty :: STM Bool }
+
+inboxEmpty :: Context -> STM Bool
+inboxEmpty = ctxInboxEmpty
+
+context :: (Monad m) => CcmT m Context
+context = undefined

@@ -3,7 +3,7 @@ module Main where
 import Config
 import State
 
-import Network.Ccm
+import qualified Network.Ccm as Ccm
 import Network.Ccm.Lens
 
 import Control.Concurrent (forkIO, threadDelay)
@@ -123,5 +123,5 @@ nodeSend next total | next >= total = stmCcm retry
 nodeSend next _ = do
   self <- getSelf
   let msg = (self, next)
-  sendCcm (Store.encode msg)
+  Ccm.blockSend (Store.encode msg)
   return $ Sent next

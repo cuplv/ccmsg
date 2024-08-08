@@ -3,6 +3,7 @@
 
 module Network.Ccm.State
   ( CcmState
+  , ccmStats
   , CcmST
   , newCcmState
   , tryDeliver
@@ -17,6 +18,9 @@ module Network.Ccm.State
   , msgPayload
   , CausalError (..)
   , showCausalError'
+  , Stats
+  , totalOutOfOrder
+  , totalInOrder
   ) where
 
 import Network.Ccm.Bsm
@@ -97,6 +101,14 @@ msgSeqNum sender msg = nextNum sender (msg ^. msgClock)
 msgId :: NodeId -> AppMsg -> MsgId
 msgId sender msg = (sender, nextNum sender (msg^.msgClock))
 
+data Stats
+  = Stats
+    { _totalOutOfOrder :: Int
+    , _totalInOrder :: Int
+    }
+
+makeLenses ''Stats
+
 data CcmState
   = CcmState
     { _ccmCache :: Map NodeId (SeqNum, Seq AppMsg)
@@ -104,6 +116,7 @@ data CcmState
     , _ccmSeen :: Map NodeId VClock
     , _localClock :: VClock
     , _ccmMsgStore :: Map MsgId AppMsg
+    , _ccmStats :: Stats
     }
 
 type CcmST m = StateT CcmState m
@@ -117,6 +130,10 @@ newCcmState = CcmState
   , _ccmSeen = Map.empty
   , _localClock = zeroClock
   , _ccmMsgStore = Map.empty
+  , _ccmStats = Stats
+    { _totalOutOfOrder = 0
+    , _totalInOrder = 0
+    }
   }
 
 {-| Try to deliver a message. If this fails, delivery will be retried

@@ -17,7 +17,6 @@ module Network.Ccm.State
   , msgPayload
   , CausalError (..)
   , showCausalError'
-  , ccmEnforceCausal
   ) where
 
 import Network.Ccm.Bsm
@@ -105,21 +104,19 @@ data CcmState
     , _ccmSeen :: Map NodeId VClock
     , _localClock :: VClock
     , _ccmMsgStore :: Map MsgId AppMsg
-    , _ccmEnforceCausal :: Bool
     }
 
 type CcmST m = StateT CcmState m
 
 makeLenses ''CcmState
 
-newCcmState :: Bool -> CcmState
-newCcmState causal = CcmState
+newCcmState :: CcmState
+newCcmState = CcmState
   { _ccmCache = Map.empty
   , _ccmWaiting = Map.empty
   , _ccmSeen = Map.empty
   , _localClock = zeroClock
   , _ccmMsgStore = Map.empty
-  , _ccmEnforceCausal = causal
   }
 
 {-| Try to deliver a message. If this fails, delivery will be retried
@@ -132,10 +129,7 @@ tryDeliver
   -> CcmST m (Either CausalError (VClock, Seq ByteString))
 tryDeliver (sender,msg) = do
   let m = msgId sender msg
-  causal <- use $ ccmEnforceCausal
-  r <- if causal
-    then punchClock sender (msg^.msgClock)
-    else return $ Right ()
+  r <- punchClock sender (msg^.msgClock)
   case r of
     Right () -> do
       -- Retry delivery of deferred msgs, collecting ids of successful

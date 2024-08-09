@@ -1,8 +1,9 @@
+{-# LANGUAGE TemplateHaskell #-}
+
 module Network.Ccm.Bsm.Multi where
 
-import Network.Ccm.Bsm.Inbox
 import Network.Ccm.Bsm.Internal
-import Network.Ccm.Bsm.Outbox
+import Network.Ccm.Lens
 
 import Control.Concurrent (forkIO,threadDelay)
 import Control.Concurrent.STM
@@ -17,24 +18,44 @@ import Data.Word (Word32)
 import Network.Ccm.TCP
 import Network.Ccm.Types
 
-boxBound = 1000
+data ConnCommand
+  = TCSend ByteString
+  | TCShutdown
+  deriving (Show,Eq,Ord)
 
 data SendTarget
   = SendTo (Set NodeId)
   | SendAll
+  deriving (Show,Eq,Ord)
+
+data PeerStatus
+  = PSConnected
+  | PSDisconnected
+  deriving (Show,Eq,Ord)
+
+data Peer
+  = Peer
+    { _peerAddr :: MyAddr
+    , _peerCommands :: TBQueue ConnCommand
+    , _peerStatus :: TVar PeerStatus
+    }
+
+makeLenses ''Peer
 
 data BsmMulti
-  = BsmMulti { bsmDbg :: Debugger
-             , bsmInbox :: BsmInbox
-             , bsmTargets :: Map NodeId (MyAddr, BsmOutbox, TVar Bool)
-             , bsmSelf :: NodeId
+  = BsmMulti { _bsmDbg :: Debugger
+             , _bsmInbox :: TBQueue (NodeId, ByteString)
+             , _bsmPeers :: Map NodeId Peer
+             , _bsmSelf :: NodeId
              }
 
+makeLenses ''BsmMulti
+
 isEmptyInbox :: BsmMulti -> STM Bool
-isEmptyInbox = isEmptyBsmInbox . bsmInbox
+isEmptyInbox bsm = isEmptyTBQueue (bsm ^. bsmInbox)
 
 getRemoteNodeIds :: BsmMulti -> Set NodeId
-getRemoteNodeIds bsm = Set.delete (bsmSelf bsm) $ Map.keysSet (bsmTargets bsm)
+getRemoteNodeIds bsm = Map.keysSet (bsm ^. bsmPeers)
 
 getNotReady :: BsmMulti -> STM [NodeId]
 getNotReady bsm =
@@ -80,23 +101,23 @@ putIntoOutbox sock n bs = case Map.lookup n (bsmTargets sock) of
 
 initBsmMulti :: Debugger -> NodeId -> Map NodeId MyAddr -> IO (BsmMulti)
 initBsmMulti d self ns = do
-  let mkTarget (n,addr) = do
-        status <- newTVarIO False
-        ob <- newBsmOutbox
+  let mkPeer (n,addr) = do
+        status <- newTVarIO PSDisconnected
+        ob <- newTBQueueIO bsmBoxBOund
         return (n,(addr,ob,status))
-  inbox <- newBsmInbox
-  targets <- Map.fromList
-    <$> mapM mkTarget (Map.toList (Map.delete self ns))
+  inbox <- newTBQueueIO bsmBoxBound
+  peers <- Map.fromList
+    <$> mapM mkPeer (Map.toList (Map.delete self ns))
   return $ BsmMulti
-    { bsmDbg = d
-    , bsmInbox = inbox
-    , bsmTargets = targets
-    , bsmSelf = self
+    { _bsmDbg = d
+    , _bsmInbox = inbox
+    , _bsmPeers = peers
+    , _bsmSelf = self
     }
 
 openBsmServer :: Debugger -> NodeId -> MyAddr -> BsmMulti -> IO ()
 openBsmServer d selfNodeId selfAddr bsm = do
-  forkIO $ runServer d selfAddr (bsmInbox bsm) (Map.map (\(_,ob,status) -> (ob,status)) (bsmTargets bsm))
+  forkIO $ runServer d selfAddr (bsmInbox bsm) (Map.map (\(_,ob,status) -> (ob,status)) (bsm^.bsmPeers))
   return ()
 
 -- | First retry delay for connection, in microseconds
@@ -109,10 +130,10 @@ openBsmClients d selfNode bsm = do
         if selfNode > targetNode
         then do
           debug d $ "Running client for " ++ show targetNode
-          forkIO (runClient initialDelay d selfNode targetNode addr (bsmInbox bsm) ob status)
+          forkIO (runClient initialDelay d selfNode targetNode addr (bsm^.bsmInbox) ob status)
           return ()
         else return ()
-  Map.traverseWithKey f (bsmTargets bsm)
+  Map.traverseWithKey f (bsm^.bsmPeers)
   return ()
 
 runBsmMulti :: Debugger -> NodeId -> Map NodeId MyAddr -> IO (BsmMulti)

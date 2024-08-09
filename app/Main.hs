@@ -59,8 +59,11 @@ nodeScript = do
       t0 <- liftIO $ getCurrentTime
       self <- lift Ccm.getSelf
       others <- lift Ccm.getOthers
+      liftIO . putStrLn $ "Send Loop"
       sendLoop
+      liftIO . putStrLn $ "Recieve Loop"
       recvLoop
+      liftIO . putStrLn $ "Waiting for sends to complete..."
       -- Wait until all sent messages are actually transmitted.
       liftIO . atomically $ check =<< Ccm.sendsComplete ctx
       t1 <- liftIO $ getCurrentTime
@@ -112,7 +115,7 @@ sendLoop = do
       lift $ Ccm.blockSend (Store.encode (self,next))
       stNextSend += 1
       tryRecv
-      -- threadDelay 1000
+      liftIO $ threadDelay 1000
       sendLoop
 
 recvLoop = do
@@ -129,33 +132,6 @@ recvLoop = do
     else
       return ()
 
--- nodeLoop :: ExT IO ()
--- nodeLoop = checkAllDone >>= \r -> if r
---   then do
---     return ()
---   else do
---     rto <- use $ stConf . cExpr . cRecvTimeout
---     next <- use stNextSend
---     limit <- use $ stConf . cExpr . cMsgCount
-
---     result <- lift . atomicallyCcmTimedMicros (fmap (* 1000) rto) $
---       orElseCcm nodeRecv (nodeSend next limit)
-
---     case result of
---       Nothing -> do
---         rs <- use stReceived
---         error $ "Timeout during experiment, " ++ show rs
---       Just (Sent _) -> do
---         stNextSend += 1
---       Just (Received msgs) -> do
---         accMsgs msgs
---       Just (ReceivedError e) -> do
---         stSeenErrors += 1
---         self <- lift getSelf
---         liftIO . putStrLn $ showCausalError' self e
-
---     nodeLoop
-
 accMsgs :: (Monad m) => Seq.Seq ExMsg -> ExT m ()
 accMsgs Seq.Empty = return ()
 accMsgs ((sender,n) Seq.:<| ms) = do
@@ -163,26 +139,3 @@ accMsgs ((sender,n) Seq.:<| ms) = do
     Just n' | n' > n -> Just n'
     _ -> Just n
   accMsgs ms
-
--- data ActionResult
---   = Sent Int
---   | Received [ExMsg]
---   | ReceivedError Ccm.CausalError
-
--- nodeRecv :: Ccm.CcmT STM ActionResult
--- nodeRecv = do
---   undefined
---   -- result <- (fmap . map $ Store.decodeEx) <$> recvCcm
---   -- case result of
---   --   Right msgs ->
---   --     return $ Received msgs
---   --   Left e ->
---   --     return $ ReceivedError e
-
--- nodeSend :: Int -> Int -> Ccm.CcmT STM ActionResult
--- nodeSend next total | next >= total = stmCcm retry
--- nodeSend next _ = do
---   self <- Ccm.getSelf
---   let msg = (self, next)
---   Ccm.blockSend (Store.encode msg)
---   return $ Sent next

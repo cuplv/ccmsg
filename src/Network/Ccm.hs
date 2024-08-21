@@ -26,7 +26,6 @@ module Network.Ccm
   , context
   , allPeersReady
   , newNetworkActivity
-  , sendsComplete
   ) where
 
 import Network.Ccm.Bsm
@@ -66,13 +65,13 @@ completeClock i v1 (RClock v2) = case lookupVC i v1 of
 zeroRClock :: RClock
 zeroRClock = RClock zeroClock
 
-type CcmT m = ReaderT BsmMulti (CcmST m)
+type CcmT m = ReaderT Bsm (CcmST m)
 
 getSelf :: (Monad m) => CcmT m NodeId
-getSelf = getBsmSelfId <$> ask
+getSelf = getSelfId <$> ask
 
 getOthers :: (Monad m) => CcmT m (Set NodeId)
-getOthers = getRemoteNodeIds <$> ask
+getOthers = getPeerIds <$> ask
 
 {-| Send a message, which causally follows all messages received so-far.
 
@@ -136,7 +135,7 @@ handleCausalMsg (sender, rawContent) = do
 tryRecv :: (MonadIO m) => CcmT m (Seq ByteString)
 tryRecv = do
   bsm <- ask
-  rawMsgs <- liftIO . atomically $ tryGetManyFromInbox bsm
+  rawMsgs <- liftIO . atomically $ tryReadInbox bsm
   let h ms raw = do
         result <- handleCausalMsg raw
         case result of
@@ -153,13 +152,12 @@ runCcm
   -> Map NodeId MyAddr -- ^ Addresses of all nodes.
   -> CcmT m a -> m a
 runCcm d self addrs comp = do
-  bsm <- liftIO $ runBsmMulti d self addrs
+  bsm <- liftIO $ runBsm d self addrs
   evalStateT (runReaderT comp bsm) newCcmState
 
 data Context
   = Context { ctxInboxEmpty :: STM Bool
             , ctxAllReady :: STM Bool
-            , ctxOutboxEmpty :: STM Bool
             }
 
 {-| Check that all peers are connected and ready to receive messages. -}
@@ -170,15 +168,10 @@ allPeersReady = ctxAllReady
 newNetworkActivity :: Context -> STM Bool
 newNetworkActivity ctx = not <$> ctxInboxEmpty ctx
 
-{-| Check whether any sent messages are still waiting to be transmitted. -}
-sendsComplete :: Context -> STM Bool
-sendsComplete = ctxOutboxEmpty
-
 context :: (Monad m) => CcmT m Context
 context = do
   bsm <- ask
   return $ Context
     { ctxInboxEmpty = isEmptyInbox bsm
     , ctxAllReady = allReady bsm
-    , ctxOutboxEmpty = checkAllSent bsm
     }

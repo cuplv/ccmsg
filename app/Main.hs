@@ -46,6 +46,13 @@ atomicallyTimed us m = do
     `orElse`
     (const Nothing <$> takeTMVar v)
 
+debug :: (MonadIO m) => String -> ExT m ()
+debug s = do
+  lvl <- use $ stConf . cDebugLevel
+  if lvl > 0
+    then liftIO $ putStrLn s
+    else return ()
+
 nodeScript :: ExT IO (Int, NominalDiffTime)
 nodeScript = do
   ctx <- lift Ccm.context
@@ -59,37 +66,41 @@ nodeScript = do
       t0 <- liftIO $ getCurrentTime
       self <- lift Ccm.getSelf
       others <- lift Ccm.getOthers
-      liftIO . putStrLn $ "Send Loop"
+      debug $ "Send Loop"
       sendLoop
-      liftIO . putStrLn $ "Recieve Loop"
+      debug $ "Recieve Loop"
       recvLoop
-      liftIO . putStrLn $ "Waiting for sends to complete..."
-      -- Wait until all sent messages are actually transmitted.
-      liftIO . atomically $ check =<< Ccm.sendsComplete ctx
       t1 <- liftIO $ getCurrentTime
       let td = diffUTCTime t1 t0
       errors <- lift . use $ ccmStats . totalOutOfOrder
+
+      liftIO $ threadDelay 1000000
       return (errors,td)
 
-checkAllDone :: (Monad m) => ExT m Bool
+checkAllDone :: (MonadIO m) => ExT m Bool
 checkAllDone = do
   self <- lift Ccm.getSelf
   others <- Set.toList <$> lift Ccm.getOthers
   ocs <- use stReceived
+  debug $ "Checking done: " ++ show ocs
   total <- use $ stConf . cExpr . cMsgCount
   next <- use $ stNextSend
   let
     f o = case Map.lookup o ocs of
       Just n -> n >= total - 1
-      Nothing -> total == 0
-    allSent = next >= total
+      Nothing -> error $ "Who is node " ++ show o ++ "?"
     allReceived = and (map f others)
-  return $ allSent && allReceived
+  if not allReceived
+    then debug $ "Not done."
+    else debug $ "Done."
+  return $ allReceived
 
 tryRecv :: ExT IO ()
 tryRecv = do
   msgs <- lift Ccm.tryRecv
-  accMsgs (fmap Store.decodeEx msgs)
+  let msgs' = fmap Store.decodeEx msgs
+  accMsgs msgs'
+  debug $ "Got " ++ show msgs'
 
 timedRecv :: ExT IO Bool
 timedRecv = do
@@ -100,9 +111,9 @@ timedRecv = do
       new <- atomicallyTimed (ms * 1000) $
         check =<< Ccm.newNetworkActivity ctx
       case new of
-        Just () -> tryRecv >> return True
-        Nothing -> return False
-    Nothing -> tryRecv >> return True
+        Just () -> tryRecv >> return False
+        Nothing -> return True
+    Nothing -> tryRecv >> return False
 
 sendLoop :: ExT IO ()
 sendLoop = do
@@ -119,7 +130,7 @@ sendLoop = do
       sendLoop
 
 recvLoop = do
-  continue <- checkAllDone
+  continue <- not <$> checkAllDone
   if continue
     then do
       timedOut <- timedRecv

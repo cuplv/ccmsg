@@ -1,8 +1,10 @@
+\(debugLevel : Natural) ->
 \(nodeId : Natural) ->
 
 { nodeId
+, debugLevel
 , experiment =
-  { msgCount = 10000
+  { msgCount = 1000
   , recvTimeout = Some 5000
   , setupTimeout = Some 5000
   , network =

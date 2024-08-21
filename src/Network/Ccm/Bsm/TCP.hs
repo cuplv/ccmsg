@@ -1,4 +1,4 @@
-module Network.Ccm.TCP where
+module Network.Ccm.Bsm.TCP where
 
 import Network.Ccm.Bsm.Internal
 import Network.Ccm.Lens
@@ -29,7 +29,7 @@ data MyAddr
            }
   deriving (Show)
 
-runServer :: MyAddr -> BsmMulti -> IO ()
+runServer :: MyAddr -> Bsm -> IO ()
 runServer myaddr bsm = do
   debug (bsm^.bsmDbg) "Opening server..."
   serve (Host (myAddrHost myaddr)) (myAddrPort myaddr) $ \(sock,addr) -> do
@@ -112,7 +112,7 @@ recvUntil sock n = do
 
 runClient
   :: Int
-  -> BsmMulti
+  -> Bsm
   -> NodeId
   -> MyAddr
   -> IO ()
@@ -129,7 +129,7 @@ runClient delay bsm targetNode targetAddr = do
       -- runClient (delay * 2) dbg selfNode targetNode targetAddr peer inbox
 
 runClient'
-  :: BsmMulti
+  :: Bsm
   -> NodeId
   -> MyAddr
   -> Peer

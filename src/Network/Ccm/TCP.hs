@@ -1,12 +1,13 @@
 module Network.Ccm.TCP where
 
-import Network.Ccm.Bsm.Inbox
-import Network.Ccm.Bsm.Outbox
+import Network.Ccm.Bsm.Internal
+import Network.Ccm.Lens
 import Network.Ccm.Types
 
 import Control.Concurrent (forkIO,threadDelay)
 import Control.Concurrent.STM
 import Control.Exception (catch, IOException, SomeException)
+import Control.Monad (forever)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
 import Data.Map (Map)
@@ -28,19 +29,19 @@ data MyAddr
            }
   deriving (Show)
 
-runServer :: Debugger -> MyAddr -> BsmInbox -> Map NodeId (BsmOutbox,TVar Bool) -> IO ()
-runServer dbg myaddr inbox outboxes = do
-  debug dbg "Opening server..."
+runServer :: MyAddr -> BsmMulti -> IO ()
+runServer myaddr bsm = do
+  debug (bsm^.bsmDbg) "Opening server..."
   serve (Host (myAddrHost myaddr)) (myAddrPort myaddr) $ \(sock,addr) -> do
-    r <- acceptConnection dbg inbox sock addr
+    r <- acceptConnection (bsm^.bsmDbg) sock addr
     case r of
-      Just target -> case Map.lookup target outboxes of
-        Just (ob,status) -> do
-          forkIO $ runSender dbg target ob sock
-          atomically $ writeTVar status True
-          catch (runReceiver dbg target inbox sock) $ \e -> do
+      Just target -> case Map.lookup target (bsm^.bsmPeers) of
+        Just p -> do
+          forkIO $ runSender (bsm^.bsmDbg) target (p^.peerOutbox) sock
+          atomically $ writeTVar (p^.peerStatus) PSConnected
+          catch (runReceiver (bsm^.bsmDbg) target (bsm^.bsmInbox) sock) $ \e -> do
             error $ "Caught: " ++ show (e :: IOException)
-        Nothing -> debug dbg $ "No outbox for " ++ show target
+        Nothing -> debug (bsm^.bsmDbg) $ "No outbox for " ++ show target
       Nothing -> return ()
 
 -- testServer = do
@@ -49,8 +50,12 @@ runServer dbg myaddr inbox outboxes = do
 --   runServer mkPrinterDbg (MyAddr "127.0.0.1" "8099") c out
 --   putStrLn "Test..."
 
-acceptConnection :: Debugger -> BsmInbox -> Socket -> SockAddr -> IO (Maybe NodeId)
-acceptConnection dbg inbox sock addr = do
+acceptConnection
+  :: Debugger
+  -> Socket
+  -> SockAddr
+  -> IO (Maybe NodeId)
+acceptConnection dbg sock addr = do
   bs <- recvUntil sock nodeIdSize
   case bs of
     Just bs -> do
@@ -61,7 +66,12 @@ acceptConnection dbg inbox sock addr = do
       debug dbg $ "Failed to init connection from " ++ show addr
       return Nothing
 
-runReceiver :: Debugger -> NodeId -> BsmInbox -> Socket -> IO ()
+runReceiver
+  :: Debugger
+  -> NodeId
+  -> TBQueue (NodeId, ByteString)
+  -> Socket
+  -> IO ()
 runReceiver dbg i inbox sock = do
   bs <- recvUntil sock sizeMsgSize
   case bs of
@@ -70,7 +80,7 @@ runReceiver dbg i inbox sock = do
       bs2 <- recvUntil sock $ fromIntegral (n :: MsgSize)
       case bs2 of
         Just bs2 -> do
-          atomically $ writeBsmInbox inbox (i,bs2)
+          atomically $ writeTBQueue inbox (i,bs2)
           let s = Store.decodeEx bs2
           debug dbg $ "[" ++ show i ++ "]: " ++ s
           runReceiver dbg i inbox sock
@@ -79,16 +89,15 @@ runReceiver dbg i inbox sock = do
     Nothing ->
       debug dbg $ "Connection closed: " ++ show i
 
-runSender :: Debugger -> NodeId -> BsmOutbox -> Socket -> IO ()
+runSender :: Debugger -> NodeId -> TBQueue PeerMessage -> Socket -> IO ()
 runSender d i outbox sock = do
-  bs <- atomically $ readBsmOutbox outbox
+  PMData bs <- atomically $ readTBQueue outbox
   let n = ByteString.length bs
   let sendAction = do
         send sock (Store.encode (n :: MsgSize) <> bs)
         debug d $ "Sent " ++ show n ++ "b message to " ++ show i  
   catch sendAction $ \e ->
     debug d $ "[Send] Caught: " ++ show (e :: SomeException)
-  atomically $ doneBsmOutbox outbox
   runSender d i outbox sock
 
 recvUntil :: Socket -> Int -> IO (Maybe ByteString)
@@ -101,20 +110,34 @@ recvUntil sock n = do
       fmap (fmap (bs <>)) (recvUntil sock (n - ByteString.length bs))
     Nothing -> return Nothing
 
-runClient :: Int -> Debugger -> NodeId -> NodeId -> MyAddr -> BsmInbox -> BsmOutbox -> TVar Bool -> IO ()
-runClient delay dbg selfNode targetNode targetAddr inbox outbox status =
-  catch (runClient' dbg selfNode targetNode targetAddr inbox outbox status) $ \e -> do
-    -- putStrLn $ "Caught: " ++ show (e :: IOException)
-    let _ = e :: IOException
-    threadDelay delay
-    -- putStrLn $ "Retrying connection to " ++ show targetNode
-    runClient (delay * 2) dbg selfNode targetNode targetAddr inbox outbox status
+runClient
+  :: Int
+  -> BsmMulti
+  -> NodeId
+  -> MyAddr
+  -> IO ()
+runClient delay bsm targetNode targetAddr = do
+  let peer = case Map.lookup targetNode (bsm^.bsmPeers) of
+        Just p -> p
+        Nothing -> error $ "runClient on non-existent peer: " ++ show targetNode
+  forever $
+    catch (runClient' bsm targetNode targetAddr peer) $ \e -> do
+      -- putStrLn $ "Caught: " ++ show (e :: IOException)
+      let _ = e :: IOException
+      threadDelay delay
+      -- putStrLn $ "Retrying connection to " ++ show targetNode
+      -- runClient (delay * 2) dbg selfNode targetNode targetAddr peer inbox
 
-runClient' :: Debugger -> NodeId -> NodeId -> MyAddr -> BsmInbox -> BsmOutbox -> TVar Bool -> IO ()
-runClient' dbg selfNode targetNode (MyAddr host port) inbox outbox status =
+runClient'
+  :: BsmMulti
+  -> NodeId
+  -> MyAddr
+  -> Peer
+  -> IO ()
+runClient' bsm targetNode (MyAddr host port) peer =
   connect host port $ \(sock,_) -> do
     -- putStrLn $ "Connected to " ++ show targetNode
-    send sock (Store.encode selfNode)
-    forkIO $ runSender dbg targetNode outbox sock
-    atomically $ writeTVar status True
-    runReceiver dbg targetNode inbox sock
+    send sock (Store.encode (bsm^.bsmSelf))
+    forkIO $ runSender (bsm^.bsmDbg) targetNode (peer^.peerOutbox) sock
+    atomically $ writeTVar (peer^.peerStatus) PSConnected
+    runReceiver (bsm^.bsmDbg) targetNode (bsm^.bsmInbox) sock

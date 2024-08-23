@@ -9,6 +9,7 @@ import Network.Ccm.Lens
 
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.STM
+import Control.Monad (filterM)
 import Control.Monad.State
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -17,6 +18,7 @@ import qualified Data.Set as Set
 import qualified Data.Sequence as Seq
 import qualified Data.Store as Store
 import System.Environment (getArgs)
+import System.Random
 import Data.Time.Clock
 import Data.Time.Format
 
@@ -115,6 +117,16 @@ timedRecv = do
         Nothing -> return True
     Nothing -> tryRecv >> return False
 
+randomSendTarget :: ExT IO Ccm.SendTarget
+randomSendTarget = do
+  partial <- randomRIO (0,4)
+  if partial == (0 :: Int)
+    then do
+      peers <- Set.toList <$> lift Ccm.getOthers
+      peers' <- filterM (\_ -> randomIO) peers
+      return $ Ccm.SendTo (Set.fromList peers')
+    else return Ccm.SendAll
+
 sendLoop :: ExT IO ()
 sendLoop = do
   self <- lift Ccm.getSelf
@@ -123,7 +135,8 @@ sendLoop = do
   if next >= total
     then return ()
     else do
-      lift $ Ccm.blockSend (Store.encode (self,next))
+      target <- randomSendTarget
+      lift $ Ccm.blockSendPartial target (Store.encode (self,next))
       stNextSend += 1
       tryRecv
       liftIO $ threadDelay 1000

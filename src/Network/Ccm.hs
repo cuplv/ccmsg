@@ -5,6 +5,7 @@ module Network.Ccm
   , getSelf
   , getOthers
   , blockSend
+  , blockSendPartial
   , tryRecv
   , runCcm
   , RClock
@@ -26,6 +27,7 @@ module Network.Ccm
   , context
   , allPeersReady
   , newNetworkActivity
+  , SendTarget (..)
   ) where
 
 import Network.Ccm.Bsm
@@ -78,13 +80,22 @@ getOthers = getPeerIds <$> ask
   This function may block if the outgoing transport queue is full.
 -}
 blockSend :: (MonadIO m) => ByteString -> CcmT m ()
-blockSend content = do
+blockSend = blockSendPartial SendAll
+
+{-| Send a message, which causally follows all messages received so-far.
+  This message will only be partially delivered, according to the given
+  'SendTarget'.
+
+  This function may block if the outgoing transport queue is full.
+-}
+blockSendPartial :: (MonadIO m) => SendTarget -> ByteString -> CcmT m ()
+blockSendPartial target content = do
   local <- lift $ use localClock
   bsm <- ask
   self <- getSelf
   let msg = mkCausalAppMsg local content
   lift $ recordSend (self,msg)
-  liftIO . atomically $ sendBsm bsm SendAll (Store.encode (msg :: AppMsg))
+  liftIO . atomically $ sendBsm bsm target (Store.encode (msg :: AppMsg))
 
 -- encodeAndBcast :: (VClock, ByteString) -> CcmT STM ()
 -- encodeAndBcast (clock,appContent) = do

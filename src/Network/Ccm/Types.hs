@@ -6,6 +6,7 @@ module Network.Ccm.Types
   , nodeIdSize
   , NodeMap
   , SeqNum
+  , MsgCount
   , Debugger
   , mkIODbg
   , mkPrinterDbg
@@ -26,6 +27,8 @@ import Data.Word (Word32)
 import Network.Socket (PortNumber,SockAddr)
 
 type SeqNum = Word32
+
+type MsgCount = Word32
 
 data NodeId = NodeId { nodeIdWord :: Word32 } deriving (Eq,Ord)
 

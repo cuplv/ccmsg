@@ -40,4 +40,4 @@ runExT m d c =
     net = c ^. cExpr . cNetwork
     s = exStateInit d c
   in
-    runCcm d self net (evalStateT m s)
+    runCcm d CacheTemp self net (evalStateT m s)

@@ -28,6 +28,7 @@ module Network.Ccm
   , allPeersReady
   , newNetworkActivity
   , SendTarget (..)
+  , CacheMode (..)
   ) where
 
 import Network.Ccm.Bsm
@@ -159,12 +160,13 @@ tryRecv = do
 runCcm
   :: (MonadIO m)
   => Debugger
+  -> CacheMode
   -> NodeId -- ^ The local node's ID.
   -> Map NodeId MyAddr -- ^ Addresses of all nodes.
   -> CcmT m a -> m a
-runCcm d self addrs comp = do
+runCcm d cacheMode self addrs comp = do
   bsm <- liftIO $ runBsm d self addrs
-  evalStateT (runReaderT comp bsm) newCcmState
+  evalStateT (runReaderT comp bsm) (newCcmState cacheMode)
 
 data Context
   = Context { ctxInboxEmpty :: STM Bool

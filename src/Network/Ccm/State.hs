@@ -7,7 +7,7 @@ module Network.Ccm.State
   , CcmST
   , newCcmState
   , recordSend
-  , localClock
+  , acceptClock
   , MsgId
   , AppMsg
   , SimpleAppMsg (..)
@@ -142,7 +142,8 @@ data CcmState
     , _ccmBlocks :: Map NodeId (SeqNum, Seq NodeId)
     , _ccmReady :: Seq NodeId
     , _ccmPeerClocks :: Map NodeId VClock
-    , _localClock :: VClock
+    , _acceptClock :: VClock
+    , _witnessClock :: VClock
     , _ccmStats :: Stats
     , _ccmCacheMode :: CacheMode
     }
@@ -163,7 +164,8 @@ newCcmState cacheMode = CcmState
   , _ccmBlocks = Map.empty
   , _ccmReady = Seq.Empty
   , _ccmPeerClocks = Map.empty
-  , _localClock = zeroClock
+  , _acceptClock = zeroClock
+  , _witnessClock = zeroClock
   , _ccmStats = Stats
     { _totalOutOfOrder = 0
     , _totalInOrder = 0
@@ -192,28 +194,36 @@ deferMsg i1 (i2,sn2) =
     Nothing -> Just (sn2, Seq.singleton i1)
 
 data ClockResult
-  = ClockAccepted -- ^ Local clock includes all dependencies.
-  | ClockRejected MsgId -- ^ Local clock is missing dependencies, and one of them has the given 'MsgId'.
-  | ClockAlreadySeen -- ^ Local clock has already seen the given message.
+  = ClockAccepted -- ^ Accept clock includes all dependencies.
+  | ClockRejected MsgId -- ^ Accept clock is missing dependencies, and one of them has the given 'MsgId'.
+  | ClockAlreadyAccepted -- ^ Accept clock already includes the given message.
+  | ClockSO -- ^ Witness clock is missing same-sender dependencies.
 
 {- | @punchClock i v@ attempts to update the local clock to include a
    new message from process @i@, which has dependencies @v@.
 
-   The local clock is only modified when 'ClockAccepted' is returned. -}
+   The accept-clock is only modified when 'ClockAccepted' is returned,
+   but the witness-clock may be modified when either 'ClockAccepted'
+   or 'ClockRejected' are returned. -}
 punchClock :: (Monad m) => NodeId -> VClock -> CcmST m ClockResult
 punchClock msgSender msgClock = do
+  witness <- use witnessClock
   let
     msgNum = nextNum msgSender msgClock
 
-  local <- use localClock
-  case leVC' msgClock local of
-    _ | hasSeen msgSender msgNum local ->
-      return ClockAlreadySeen
-    Right () -> do
-      localClock %= tick msgSender
-      return ClockAccepted
-    Left m ->
-      return $ ClockRejected m
+  if leNode msgSender msgClock witness
+    then do
+      witnessClock %= tickTo msgNum msgSender
+      accept <- use acceptClock
+      case leVC' msgClock accept of
+        _ | hasSeen msgSender msgNum accept ->
+          return ClockAlreadyAccepted
+        Right () -> do
+          acceptClock %= tick msgSender
+          return ClockAccepted
+        Left m ->
+          return $ ClockRejected m
+    else return ClockSO
 
 {-| Record the sending of a new message, trusting that the new message's
   clock is satisfied by the local clock.
@@ -222,7 +232,7 @@ punchClock msgSender msgClock = do
   now, only the local clock is modified. -}
 recordSend :: (Monad m) => (NodeId, AppMsg) -> CcmST m ()
 recordSend (sender,msg) = do
-  localClock %= tick sender
+  acceptClock %= tick sender
   cacheDelivered (sender,msg)
 
 {-| Return any 'MsgId's that were waiting on the given 'MsgId', removing

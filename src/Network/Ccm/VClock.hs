@@ -5,6 +5,7 @@ module Network.Ccm.VClock
   , zeroClock
   , tick
   , tickBy
+  , tickTo
   , nextNum
   , precedes
   , concurrent
@@ -13,6 +14,7 @@ module Network.Ccm.VClock
   , joinVC
   , leVC
   , leVC'
+  , leNode
   , hasSeen
   , changed
   , activeProcesses
@@ -90,6 +92,19 @@ tickBy n1 i (VClock m) | n1 > 0 = VClock $ Map.alter f i m
   where f (Just n) = Just (n + n1)
         f Nothing = Just (n1 - 1)
 
+{- | Advance the clock for the given process ID, up to the given
+   sequence number.  If the clock was already at or beyond that
+   sequence number, it is returned unchanged.
+
+@
+tickTo 0 "a" zeroClock ≡ tick "a" zeroClock
+@
+-}
+tickTo :: SeqNum -> NodeId -> VClock -> VClock
+tickTo n1 i (VClock m) = VClock $ Map.alter f i m
+  where f (Just n2) = Just (max n1 n2)
+        f Nothing = Just n1
+
 {- | Check that the left clock either precedes or is equal to the right
    clock.  In other words, whether the right clock has seen every event
    that the left clock has seen. -}
@@ -106,6 +121,16 @@ leVC' v1@(VClock m1) v2 = mapM_ f $ Map.toList m1
   where f (k,n1) = case lookupVC k v2 of
           Just n2 | n1 > n2 -> Left (k,n1)
           _ -> Right ()
+
+{- | Check that the left clock either precedes or is equal to the right
+   clock for a single given 'NodeId'. -}
+leNode :: NodeId -> VClock -> VClock -> Bool
+leNode i v1 v2 =
+  case lookupVC i v1 of
+    Nothing -> True
+    Just n1 -> case lookupVC i v2 of
+      Nothing -> False
+      Just n2 -> n1 <= n2
 
 {- | Check whether one clock denotes an event that happens before
    another.

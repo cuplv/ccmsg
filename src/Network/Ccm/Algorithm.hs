@@ -94,7 +94,9 @@ tryAccept sender mmsg = do
     ClockRejected mid -> lift $ do
       when fresh $ do
         ccmStats . totalOutOfOrder += 1
-        -- Put message into waiting queue
+        -- Put message into waiting queue.  We know that this message
+        -- goes at the end of the waiting queue, because we only allow
+        -- messages into the waiting queue in sender-order.
         cache sender . mcWaiting %= (|> msg)
 
       -- Set retry-trigger for the message ID that we are waiting for
@@ -102,11 +104,15 @@ tryAccept sender mmsg = do
 
       -- Assemble error message details
       return Nothing
-    ClockAlreadySeen -> do
+    ClockAlreadyAccepted -> do
       -- If the message was deferred, drop it from the waiting queue.
       when (not fresh) . lift $
         cache sender . mcWaiting %= Seq.drop 1
 
+      return Nothing
+    ClockSO -> do
+      -- In this case, it's not possible for the message to have been
+      -- previously deferred, so we don't need to clean anything up.
       return Nothing
 
 {- | This is like the 'Data.Maybe.catMaybes' function, but runs over

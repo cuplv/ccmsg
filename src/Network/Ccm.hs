@@ -92,7 +92,7 @@ blockSend = blockSendPartial SendAll
 -}
 blockSendPartial :: (MonadIO m) => SendTarget -> ByteString -> CcmT m ()
 blockSendPartial target content = do
-  local <- lift $ use localClock
+  local <- lift $ use acceptClock
   bsm <- ask
   self <- getSelf
   let msg = mkCausalAppMsg local content

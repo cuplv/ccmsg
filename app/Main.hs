@@ -117,9 +117,9 @@ timedRecv = do
         Nothing -> return True
     Nothing -> tryRecv >> return False
 
-randomSendTarget :: ExT IO Ccm.SendTarget
-randomSendTarget = do
-  partial <- randomRIO (0,4)
+randomSendTarget :: Int -> ExT IO Ccm.SendTarget
+randomSendTarget denom = do
+  partial <- randomRIO (0,denom)
   if partial == (0 :: Int)
     then do
       peers <- Set.toList <$> lift Ccm.getOthers
@@ -131,11 +131,14 @@ sendLoop :: ExT IO ()
 sendLoop = do
   self <- lift Ccm.getSelf
   total <- use $ stConf . cExpr . cMsgCount
+  drop <- use $ stConf . cExpr . cDropMessages
   next <- use $ stNextSend
   if next >= total
     then return ()
     else do
-      target <- randomSendTarget
+      target <- case drop of
+        Just n -> randomSendTarget n
+        Nothing -> return Ccm.SendAll
       lift $ Ccm.blockSendPartial target (Store.encode (self,next))
       stNextSend += 1
       tryRecv

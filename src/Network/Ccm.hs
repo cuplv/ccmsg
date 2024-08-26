@@ -31,6 +31,7 @@ module Network.Ccm
   , CacheMode (..)
   ) where
 
+import Network.Ccm.Algorithm
 import Network.Ccm.Bsm
 import Network.Ccm.Lens
 import Network.Ccm.State
@@ -111,7 +112,7 @@ blockSendPartial target content = do
 handleCausalMsg
   :: (MonadIO m)
   => (NodeId, ByteString)
-  -> CcmT m (Either CausalError (Seq ByteString))
+  -> CcmT m (Seq ByteString)
 handleCausalMsg (sender, rawContent) = do
   let msg = case Store.decode rawContent of
         Right msg -> (msg :: AppMsg)
@@ -129,14 +130,7 @@ handleCausalMsg (sender, rawContent) = do
               ++ show sender
               ++ ", "
               ++ show e
-  result <- lift $ tryDeliver (sender,msg)
-  case result of
-    Right (_, dmsgs) -> do
-      ccmStats . totalInOrder += 1
-      return $ Right dmsgs
-    Left e -> do
-      ccmStats . totalOutOfOrder += 1
-      return $ Left e
+  lift $ processMessage (sender,msg)
 
 {-| Receive any causally-ordered messages that are available.
 
@@ -149,10 +143,8 @@ tryRecv = do
   bsm <- ask
   rawMsgs <- liftIO . atomically $ tryReadInbox bsm
   let h ms raw = do
-        result <- handleCausalMsg raw
-        case result of
-          Right ms' -> return (ms Seq.>< ms')
-          Left e -> return ms
+        ms' <- handleCausalMsg raw
+        return (ms Seq.>< ms')
   foldlM h Seq.empty rawMsgs
 
 {-| Run a 'CcmT' computation.  This needs 'IO' in order to operate TCP

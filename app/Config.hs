@@ -17,6 +17,7 @@ data ExConfig
     , _cMsgCount :: Int
     , _cSetupTimeout :: Maybe Int
     , _cRecvTimeout :: Maybe Int
+    , _cDropMessages :: Maybe Int
     }
 
 makeLenses ''ExConfig
@@ -48,6 +49,7 @@ exConfigD = Dhall.record $ ExConfig
   <*> Dhall.field "msgCount" (fromIntegral <$> Dhall.natural)
   <*> Dhall.field "setupTimeout" (Dhall.maybe (fromIntegral <$> Dhall.natural))
   <*> Dhall.field "recvTimeout" (Dhall.maybe (fromIntegral <$> Dhall.natural))
+  <*> Dhall.field "dropMessages" (Dhall.maybe (fromIntegral <$> Dhall.natural))
 
 nodeConfigD :: Dhall.Decoder NodeConfig
 nodeConfigD = Dhall.record $ NodeConfig

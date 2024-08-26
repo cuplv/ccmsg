@@ -169,5 +169,5 @@ nextNum i v = case lookupVC i v of
   process @i@. -}
 hasSeen :: NodeId -> SeqNum -> VClock -> Bool
 hasSeen i n v = case lookupVC i v of
-  Just n' | n' <= n -> True
+  Just n' | n' >= n -> True
   _ -> False

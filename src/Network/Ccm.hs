@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TemplateHaskell #-}
 
 module Network.Ccm
@@ -130,7 +131,7 @@ handleCausalMsg (sender, rawContent) = do
               ++ show sender
               ++ ", "
               ++ show e
-  lift $ processPost (sender,msg)
+  lift $ inputPost (sender,msg)
 
 {-| Receive any causally-ordered messages that are available.
 

@@ -1,4 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TemplateHaskell #-}
 
@@ -22,14 +23,16 @@ module Network.Ccm.State
   , totalOutOfOrder
   , totalInOrder
   , CacheMode (..)
-  , punchClock
+  , punchOutputClock
   , revive
   , cache
   , mcWaiting
   , msgId
   , cacheDelivered
   , deferMsg
-  , ClockResult (..)
+  , OutputResult (..)
+  , InputResult (..)
+  , punchInputClock
   ) where
 
 import Network.Ccm.Bsm
@@ -215,37 +218,25 @@ deferMsg i1 (i2,sn2) =
     -- Just (sn,d) -> Just (min sn sn2, d |> i1)
     Nothing -> Just $ newBlock sn2 i1
 
-data ClockResult
-  = ClockAccepted -- ^ Accept clock includes all dependencies.
-  | ClockRejected MsgId -- ^ Accept clock is missing dependencies, and one of them has the given 'MsgId'.
-  | ClockAlreadyAccepted -- ^ Accept clock already includes the given message.
-  | ClockSO -- ^ Witness clock is missing same-sender dependencies.
+data OutputResult
+  = OCOutput -- ^ Post has been marked as output.
+  | OCDefer MsgId -- ^ Post cannot be output, because it has some non-output dependencies, and one of them has the given 'MsgId'.
 
-{- | @punchClock i v@ attempts to update the local clock to include a
-   new message from process @i@, which has dependencies @v@.
+{- | @punchOutputClock i v@ attempts to update the local clock to
+   include a new message from process @i@, which has dependencies @v@.
 
    The accept-clock is only modified when 'ClockAccepted' is returned,
    but the witness-clock may be modified when either 'ClockAccepted'
    or 'ClockRejected' are returned. -}
-punchClock :: (Monad m) => NodeId -> VClock -> CcmST m ClockResult
-punchClock msgSender msgClock = do
-  witness <- use inputClock
-  let
-    msgNum = nextNum msgSender msgClock
-
-  if leNode msgSender msgClock witness
-    then do
-      inputClock %= tickTo msgNum msgSender
-      accept <- use outputClock
-      case leVC' msgClock accept of
-        _ | hasSeen msgSender msgNum accept ->
-          return ClockAlreadyAccepted
-        Right () -> do
-          outputClock %= tick msgSender
-          return ClockAccepted
-        Left m ->
-          return $ ClockRejected m
-    else return ClockSO
+punchOutputClock :: (Monad m) => NodeId -> VClock -> CcmST m OutputResult
+punchOutputClock msgSender msgClock = do
+  accept <- use outputClock
+  case leVC' msgClock accept of
+    Right () -> do
+      outputClock %= tick msgSender
+      return OCOutput
+    Left m ->
+      return $ OCDefer m
 
 {-| Record the sending of a new message, trusting that the new message's
   clock is satisfied by the local clock.
@@ -267,3 +258,26 @@ revive (sender,sn) = do
       blocks sender .= Nothing
       return (b^.blNodeIds)
     _ -> return Seq.Empty
+
+data InputResult
+  = ICInput
+  | ICRepeat
+  | ICSkipped SeqNum
+
+{-| Try to record a newly-receive post on the input-clock.
+
+  If successful, the input-clock is modified to include the new post,
+  and 'ICInput' is returned.  Otherwise, the clock is not modified.
+-}
+punchInputClock :: (Monad m) => NodeId -> VClock -> CcmST m InputResult
+punchInputClock sender postClock = do
+  ic <- use inputClock
+  let
+    n = nextNum sender postClock
+    m = nextNum sender ic
+  if
+    | n == m -> do
+        inputClock %= tick sender
+        return ICInput
+    | n < m -> return ICRepeat
+    | n > m -> return $ ICSkipped m

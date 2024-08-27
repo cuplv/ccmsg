@@ -184,7 +184,11 @@ aggDiff (VClock m1) v2 = Map.foldlWithKey f 0 m1
                      Nothing -> n + n1 + 1
 
 {-| Sequence number of next event from process @i@ that has not yet been
-  witnessed by the clock. -}
+  witnessed by the clock.
+
+  This also represents the number of events that have been witnessed
+  from process @i@, since sequence numbers begin at @0@.
+-}
 nextNum :: NodeId -> VClock -> SeqNum
 nextNum i v = case lookupVC i v of
   Just n -> n + 1

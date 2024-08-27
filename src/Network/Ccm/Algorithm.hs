@@ -1,7 +1,7 @@
 {-# LANGUAGE LambdaCase #-}
 
 module Network.Ccm.Algorithm
-  ( processPost
+  ( inputPost
   ) where
 
 import Network.Ccm.Lens
@@ -22,17 +22,33 @@ import qualified Data.Sequence as Seq
 import Data.Traversable (for)
 import GHC.Exts (toList,fromList)
 
-{- | Process a newly-received message, returning any accepted payloads
-   that result. -}
-processPost
+{- | Input a newly-received post, returning any output post payloads
+   that result.
+
+   Posts are supposed to be input in sender-order. Repeat posts will
+   be silently dropped, and skipped posts will generate an error.
+-}
+inputPost
   :: (Monad m)
   => (NodeId, AppMsg)
   -> CcmST m (Seq ByteString)
-processPost (sender,msg) =
-  (flip execStateT) Seq.Empty $ do
-    tryAcceptFresh sender msg >>= \case
-      Just mid -> acceptRec mid
-      Nothing -> return ()
+inputPost (sender,msg) =
+  punchInputClock sender (msg^.msgClock) >>= \case
+    ICInput ->
+      -- If 'ICInput' is returned, it means that the inputClock has
+      -- been modified to include the new post.
+      (flip execStateT) Seq.Empty $ do
+        tryAcceptFresh sender msg >>= \case
+          Just mid -> acceptRec mid
+          Nothing -> return ()
+    ICRepeat -> return Seq.Empty
+    ICSkipped sn -> error $
+      "Got post "
+      ++ show (nextNum sender (msg^.msgClock))
+      ++ " from node "
+      ++ show sender
+      ++ " before post "
+      ++ show sn
 
 type CcmP m = StateT (Seq ByteString) (CcmST m)
 
@@ -79,8 +95,8 @@ tryAccept sender mmsg = do
     Nothing -> lift $
       fromJust <$> preuse (cache sender . mcWaiting . ix 0)
 
-  lift (punchClock sender (msg^.msgClock)) >>= \case
-    ClockAccepted -> do
+  lift (punchOutputClock sender (msg^.msgClock)) >>= \case
+    OCOutput -> do
       when fresh . lift $
         ccmStats . totalInOrder += 1
       -- Remove the message from the front of the waiting queue
@@ -91,7 +107,7 @@ tryAccept sender mmsg = do
       -- Pass payload to application
       id %= (|> (msg^.msgPayload))
       return $ Just (msgId sender msg)
-    ClockRejected mid -> lift $ do
+    OCDefer mid -> lift $ do
       when fresh $ do
         ccmStats . totalOutOfOrder += 1
         -- Put message into waiting queue.  We know that this message
@@ -102,16 +118,6 @@ tryAccept sender mmsg = do
       -- Set retry-trigger for the message ID that we are waiting for
       deferMsg sender mid
 
-      return Nothing
-    ClockAlreadyAccepted -> do
-      -- If the message was deferred, drop it from the waiting queue.
-      when (not fresh) . lift $
-        cache sender . mcWaiting %= Seq.drop 1
-
-      return Nothing
-    ClockSO -> do
-      -- In this case, it's not possible for the message to have been
-      -- previously deferred, so we don't need to clean anything up.
       return Nothing
 
 {- | This is like the 'Data.Maybe.catMaybes' function, but runs over

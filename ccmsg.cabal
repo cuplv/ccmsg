@@ -29,6 +29,7 @@ library
                     , Network.Ccm.Bsm.Internal
                     , Network.Ccm.Bsm.TCP
                     , Network.Ccm.Lens
+                    , Network.Ccm.Sort
                     , Network.Ccm.State
                     , Network.Ccm.VClock
                     , Network.Framed

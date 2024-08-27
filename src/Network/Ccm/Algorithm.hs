@@ -1,7 +1,7 @@
 {-# LANGUAGE LambdaCase #-}
 
 module Network.Ccm.Algorithm
-  ( processMessage
+  ( processPost
   ) where
 
 import Network.Ccm.Lens
@@ -24,11 +24,11 @@ import GHC.Exts (toList,fromList)
 
 {- | Process a newly-received message, returning any accepted payloads
    that result. -}
-processMessage
+processPost
   :: (Monad m)
   => (NodeId, AppMsg)
   -> CcmST m (Seq ByteString)
-processMessage (sender,msg) =
+processPost (sender,msg) =
   (flip execStateT) Seq.Empty $ do
     tryAcceptFresh sender msg >>= \case
       Just mid -> acceptRec mid
@@ -102,7 +102,6 @@ tryAccept sender mmsg = do
       -- Set retry-trigger for the message ID that we are waiting for
       deferMsg sender mid
 
-      -- Assemble error message details
       return Nothing
     ClockAlreadyAccepted -> do
       -- If the message was deferred, drop it from the waiting queue.

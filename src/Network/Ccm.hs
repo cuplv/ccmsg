@@ -92,7 +92,7 @@ blockSend = blockSendPartial SendAll
 -}
 blockSendPartial :: (MonadIO m) => SendTarget -> ByteString -> CcmT m ()
 blockSendPartial target content = do
-  local <- lift $ use acceptClock
+  local <- lift $ use outputClock
   bsm <- ask
   self <- getSelf
   let msg = mkCausalAppMsg local content
@@ -130,7 +130,7 @@ handleCausalMsg (sender, rawContent) = do
               ++ show sender
               ++ ", "
               ++ show e
-  lift $ processMessage (sender,msg)
+  lift $ processPost (sender,msg)
 
 {-| Receive any causally-ordered messages that are available.
 

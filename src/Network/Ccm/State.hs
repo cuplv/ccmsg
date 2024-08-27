@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TemplateHaskell #-}
 
@@ -7,7 +8,7 @@ module Network.Ccm.State
   , CcmST
   , newCcmState
   , recordSend
-  , acceptClock
+  , outputClock
   , MsgId
   , AppMsg
   , SimpleAppMsg (..)
@@ -36,6 +37,8 @@ import Network.Ccm.Lens
 import Network.Ccm.Types
 import Network.Ccm.VClock
 
+import Control.Concurrent (ThreadId)
+import Control.Concurrent.STM
 import Control.Monad.State
 import Data.ByteString (ByteString)
 import Data.Foldable (foldlM)
@@ -136,14 +139,30 @@ data Stats
 
 makeLenses ''Stats
 
+data Block
+  = Block
+    { _blSeqNum :: SeqNum
+    , _blNodeIds :: Seq NodeId
+    , _blTimer :: Maybe (TMVar (), ThreadId)
+    }
+
+makeLenses ''Block
+
+newBlock :: SeqNum -> NodeId -> Block
+newBlock sn i = Block
+  { _blSeqNum = sn
+  , _blNodeIds = Seq.singleton i
+  , _blTimer = Nothing
+  }
+
 data CcmState
   = CcmState
     { _ccmCache :: Map NodeId MsgCache
-    , _ccmBlocks :: Map NodeId (SeqNum, Seq NodeId)
+    , _ccmBlocks :: Map NodeId Block
     , _ccmReady :: Seq NodeId
     , _ccmPeerClocks :: Map NodeId VClock
-    , _acceptClock :: VClock
-    , _witnessClock :: VClock
+    , _outputClock :: VClock
+    , _inputClock :: VClock
     , _ccmStats :: Stats
     , _ccmCacheMode :: CacheMode
     }
@@ -152,7 +171,7 @@ type CcmST m = StateT CcmState m
 
 makeLenses ''CcmState
 
-blocks :: NodeId -> Lens' CcmState (Maybe (SeqNum, Seq NodeId))
+blocks :: NodeId -> Lens' CcmState (Maybe Block)
 blocks i = ccmBlocks . at i
 
 cache :: NodeId -> Lens' CcmState MsgCache
@@ -164,8 +183,8 @@ newCcmState cacheMode = CcmState
   , _ccmBlocks = Map.empty
   , _ccmReady = Seq.Empty
   , _ccmPeerClocks = Map.empty
-  , _acceptClock = zeroClock
-  , _witnessClock = zeroClock
+  , _outputClock = zeroClock
+  , _inputClock = zeroClock
   , _ccmStats = Stats
     { _totalOutOfOrder = 0
     , _totalInOrder = 0
@@ -189,9 +208,12 @@ cacheDelivered (sender, msg) = do
   cannot be delivered until after @m@ has been delivered. -}
 deferMsg :: (Monad m) => NodeId -> MsgId -> CcmST m ()
 deferMsg i1 (i2,sn2) =
-  blocks i2 %= \v -> case v of
-    Just (sn,d) -> Just (min sn sn2, d |> i1)
-    Nothing -> Just (sn2, Seq.singleton i1)
+  blocks i2 %= \case
+    Just b -> Just $ b
+      & blSeqNum %~ (min sn2)
+      & blNodeIds %~ (|> i1)
+    -- Just (sn,d) -> Just (min sn sn2, d |> i1)
+    Nothing -> Just $ newBlock sn2 i1
 
 data ClockResult
   = ClockAccepted -- ^ Accept clock includes all dependencies.
@@ -207,19 +229,19 @@ data ClockResult
    or 'ClockRejected' are returned. -}
 punchClock :: (Monad m) => NodeId -> VClock -> CcmST m ClockResult
 punchClock msgSender msgClock = do
-  witness <- use witnessClock
+  witness <- use inputClock
   let
     msgNum = nextNum msgSender msgClock
 
   if leNode msgSender msgClock witness
     then do
-      witnessClock %= tickTo msgNum msgSender
-      accept <- use acceptClock
+      inputClock %= tickTo msgNum msgSender
+      accept <- use outputClock
       case leVC' msgClock accept of
         _ | hasSeen msgSender msgNum accept ->
           return ClockAlreadyAccepted
         Right () -> do
-          acceptClock %= tick msgSender
+          outputClock %= tick msgSender
           return ClockAccepted
         Left m ->
           return $ ClockRejected m
@@ -232,7 +254,7 @@ punchClock msgSender msgClock = do
   now, only the local clock is modified. -}
 recordSend :: (Monad m) => (NodeId, AppMsg) -> CcmST m ()
 recordSend (sender,msg) = do
-  acceptClock %= tick sender
+  outputClock %= tick sender
   cacheDelivered (sender,msg)
 
 {-| Return any 'MsgId's that were waiting on the given 'MsgId', removing
@@ -241,7 +263,7 @@ revive :: (Monad m) => MsgId -> CcmST m (Seq NodeId)
 revive (sender,sn) = do
   bs <- use (blocks sender)
   case bs of
-    Just (sn',nids) | sn' <= sn -> do
+    Just b | (b^.blSeqNum) <= sn -> do
       blocks sender .= Nothing
-      return nids
+      return (b^.blNodeIds)
     _ -> return Seq.Empty

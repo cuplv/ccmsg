@@ -123,7 +123,7 @@ msgId sender msg = (sender, nextNum sender (msg^.msgClock))
 
 data MsgCache
   = MsgCache
-    { _mcDeleted :: MsgCount
+    { _mcDeleted :: PostCount
     , _mcDelivered :: Seq AppMsg
     , _mcWaiting :: Seq AppMsg
     }

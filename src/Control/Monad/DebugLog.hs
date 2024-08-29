@@ -1,10 +1,15 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 module Control.Monad.DebugLog
   ( MonadLog (..)
+  , Selector
+  , DebugAtom (..)
+  , parseDebugSelector
+  , prettySelector
   , LogIO
   , runLogIO
   , runLogStdout
@@ -14,78 +19,112 @@ module Control.Monad.DebugLog
   , passLogIOF
   ) where
 
+import Control.Monad.DebugLog.Selector
+
 import Control.Concurrent (forkIO)
 import Control.Concurrent.STM
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
-import Control.Monad.State (StateT)
-import Control.Monad.Writer (WriterT)
+import Control.Monad.State (StateT (StateT))
+import Control.Monad.Writer (WriterT (WriterT))
+import qualified Data.List as List
+import Data.Set (Set)
+import qualified Data.Set as Set
+import Lens.Micro.Platform
 
-class (Monad m) => MonadLog l m | m -> l where
-  dlog :: l -> String -> m ()
-  -- ^ Log a 'String' at the given level.
+class (Monad m) => MonadLog m where
+  dlog :: [String] -> String -> m ()
+  -- ^ Log a 'String' on the given channel
+  dprefix :: [String] -> m a -> m a
+  -- ^ Add a prefix to all uses of 'dlog' in the given action
 
-instance (MonadLog l m) => MonadLog l (ExceptT e m) where
+instance (MonadLog m) => MonadLog (ExceptT e m) where
   dlog l s = lift $ dlog l s
+  dprefix l (ExceptT m) = ExceptT $ dprefix l m
 
-instance (MonadLog l m) => MonadLog l (ReaderT r m) where
+instance (MonadLog m) => MonadLog (ReaderT r m) where
   dlog l s = lift $ dlog l s
+  dprefix l (ReaderT m) = ReaderT $ dprefix l <$> m
 
-instance (MonadLog l m) => MonadLog l (StateT s m) where
+instance (MonadLog m) => MonadLog (StateT s m) where
   dlog l s = lift $ dlog l s
+  dprefix l (StateT m) = StateT $ dprefix l <$> m
 
-instance (MonadLog l m, Monoid w) => MonadLog l (WriterT w m) where
+instance (MonadLog m, Monoid w) => MonadLog (WriterT w m) where
   dlog l s = lift $ dlog l s
+  dprefix l (WriterT m) = WriterT $ dprefix l m
+
+data LogEnv
+  = LogEnv
+    { _leActivePrefixes :: Set Selector
+    , _leAction :: String -> IO ()
+    , _lePrefix :: [String]
+    }
+
+makeLenses ''LogEnv
 
 -- | A 'MonadLog' that applies an 'IO' action to logs within a given
 -- level.
-newtype LogIO l m a = LogIO { runLogIO' :: ReaderT (l, String -> IO ()) m a }
+newtype LogIO m a
+  = LogIO
+    { runLogIO' :: ReaderT LogEnv m a
+    }
 
-instance (Functor m) => Functor (LogIO l m) where
+instance (Functor m) => Functor (LogIO m) where
   fmap f (LogIO m) = LogIO (fmap f m)
 
-instance (Applicative m) => Applicative (LogIO l m) where
+instance (Applicative m) => Applicative (LogIO m) where
   pure = LogIO . pure
   LogIO f <*> LogIO v = LogIO (f <*> v)
 
-instance (Monad m) => Monad (LogIO l m) where
+instance (Monad m) => Monad (LogIO m) where
   LogIO m >>= f = LogIO (m >>= (\a -> runLogIO' $ f a))
 
-instance MonadTrans (LogIO l) where
+instance MonadTrans LogIO where
   lift m = LogIO (lift m)
 
-instance (MonadIO m) => MonadIO (LogIO l m) where
+instance (MonadIO m) => MonadIO (LogIO m) where
   liftIO m = LogIO (liftIO m)
 
-instance (MonadError e m) => MonadError e (LogIO l m) where
+instance (MonadError e m) => MonadError e (LogIO m) where
   throwError = lift . throwError
   catchError (LogIO m) f = LogIO $
     catchError m (\e -> runLogIO' $ f e)
 
-instance (MonadIO m, Ord l) => MonadLog l (LogIO l m) where
-  dlog l s = LogIO $ do
-    (l', action) <- ask
-    if l <= l'
-      then liftIO $ action s
-      else return ()
+anyMatch l ls = null $ Set.filter (`selectorMatch` l) ls
 
--- | Run a 'LogIO' for the given level and action.
-runLogIO :: LogIO l m a -> l -> (String -> IO ()) -> m a
-runLogIO (LogIO m) l f = runReaderT m (l,f)
+instance (MonadIO m) => MonadLog (LogIO m) where
+  dlog l s = LogIO $ do
+    e <- ask
+    let result = anyMatch ((e^.lePrefix) ++ l) (e^.leActivePrefixes)
+    if result
+      then liftIO $ (e^.leAction) (show l ++ " " ++ s)
+      else return ()
+  dprefix l (LogIO m) = LogIO (withReaderT (lePrefix %~ (++ l)) m)
+
+runNoLog :: LogIO m a -> m a
+runNoLog m = runLogIO m Set.empty (\_ -> return ())
+
+runLogIO :: LogIO m a -> Set Selector -> (String -> IO ()) -> m a
+runLogIO m l a = runLogIO'' m (LogEnv l a [])
+
+-- | Run a 'LogIO' for the given level, action, and prefix.
+runLogIO'' :: LogIO m a -> LogEnv -> m a
+runLogIO'' (LogIO m) = runReaderT m
 
 -- | Run a 'LogIO' that prints logs to stdout. The provided 'String'
 -- is used as a prefix.
-runLogStdout :: LogIO l m a -> l -> String -> m a
-runLogStdout (LogIO m) l prefix =
-  let action s = putStrLn $ "[" ++ prefix ++ "] " ++ s
-  in runReaderT m (l,action)
+runLogStdout :: LogIO m a -> Set Selector -> m a
+runLogStdout (LogIO m) l =
+  let action s = putStrLn s
+  in runReaderT m (LogEnv l action [])
 
 -- | Run a 'LogIO' that feeds logs into a queue, automatically
 -- spawning a thread that will continually print them until the
 -- process terminates.  Essentially, this is a thread-safe version of
 -- 'runLogStdout'.
-runLogStdoutC :: (MonadIO m) => LogIO l m a -> l -> m a
+runLogStdoutC :: (MonadIO m) => LogIO m a -> Set Selector -> m a
 runLogStdoutC (LogIO m) l = do
   queue <- liftIO newTQueueIO
   let
@@ -93,23 +132,26 @@ runLogStdoutC (LogIO m) l = do
   liftIO . forkIO . forever $ do
     log <- atomically . readTQueue $ queue
     putStrLn log
-  runReaderT m (l,action)
+  runReaderT m (LogEnv l action [])
 
 -- | Run a 'LogIO' that writes logs to a 'TQueue'.
-runLogTQueue :: LogIO l m a -> l -> TQueue String -> m a
+runLogTQueue :: LogIO m a -> Set Selector -> TQueue String -> m a
 runLogTQueue (LogIO m) l queue =
   let action s = atomically $ writeTQueue queue s
-  in runReaderT m (l,action)
+  in runReaderT m (LogEnv l action [])
 
 -- | Transform a @'LogIO' l 'IO'@ action into an 'IO' action that has
 -- the same behavior.  This is useful when you need to fork off a new
 -- thread that should use the same logging system, for example.
-passLogIO :: LogIO l IO a -> LogIO l IO (IO a)
+passLogIO :: LogIO IO a -> LogIO IO (IO a)
 passLogIO (LogIO m) = LogIO $ do
-  (l,action) <- ask
-  return (runLogIO (LogIO m) l action)
+  e <- ask
+  return (runLogIO'' (LogIO m) e)
 
-passLogIOF :: (a -> LogIO l IO b) -> LogIO l IO (a -> IO b)
+passLogIOF :: (a -> LogIO IO b) -> LogIO IO (a -> IO b)
 passLogIOF f = LogIO $ do
-  (l,action) <- ask
-  return $ \a -> runLogIO (f a) l action
+  e <- ask
+  return $ \a -> runLogIO'' (f a) e
+
+debugNone :: Set [String]
+debugNone = Set.empty

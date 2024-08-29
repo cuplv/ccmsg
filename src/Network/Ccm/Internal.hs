@@ -5,12 +5,15 @@
 
 module Network.Ccm.Internal where
 
+import Control.Monad.DebugLog
 import Network.Ccm.Bsm
 import Network.Ccm.Lens
 import qualified Network.Ccm.Sort as Sort
 import Network.Ccm.Types
 import Network.Ccm.VClock
 
+import Control.Concurrent.STM
+import Control.Monad (foldM)
 import Control.Monad.Reader
 import Control.Monad.State
 import Data.ByteString (ByteString)
@@ -18,20 +21,23 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
+import Data.Store.TH (makeStore)
+import qualified Data.Store as Store
 
 -- | A causal messaging post
 data Post
   = Post
-    { _postSender :: NodeId
+    { _postCreator :: NodeId
     , _postDeps :: VClock
     , _postContent :: ByteString
     }
   deriving (Show,Eq,Ord)
 
 makeLenses ''Post
+makeStore ''Post
 
 seqNum :: SimpleGetter Post SeqNum
-seqNum = to $ \r -> nextNum (r^.postSender) (r^.postDeps)
+seqNum = to $ \r -> nextNum (r^.postCreator) (r^.postDeps)
 
 -- | A communication manager for a peer node
 data Liason
@@ -87,4 +93,47 @@ post i sn = to $ \s ->
 
 type CcmT m = ReaderT Bsm (StateT CcmState m)
 
--- tryRecv :: MonadIO m => CcmT m (Seq ByteString)
+data CcmMsg
+  = PostMsg Post
+    -- ^ Post delivery: either a "primary" delivery from the post's
+    -- creator or a "secondary" delivery from a different peer in
+    -- response to a 'Retrans' request.
+  | Backup SeqNum
+    -- ^ Sender wants receiver to back up their own primary message
+    -- delivery to start again with the given 'SeqNum'.
+  | Retrans NodeId SeqNum
+    -- ^ Sender wants the receiver to send a one-time sequence of all
+    -- the messages it has seen from the given 'NodeId', starting with
+    -- the given 'SeqNum'.
+  | HeartBeat VClock
+    -- ^ Notification that the sender has seen the given clock.
+  deriving (Show,Eq,Ord)
+
+makeStore ''CcmMsg
+
+tryRecv :: (MonadLog m, MonadIO m) => CcmT m (Seq ByteString)
+tryRecv = do
+  msgs <- tryReadMsgs
+  -- Then handle each message in turn, collecting any causal-ordered
+  -- posts that can be delivered to the application.
+  --
+  -- Each message is either a post that (if in sender-order) can go
+  -- into the store and into the sorting machine, or it's a retransmit
+  -- / backup request that will modify the per-peer send triggers.
+  undefined
+
+tryReadMsgs :: (MonadLog m, MonadIO m) => CcmT m (Seq (NodeId, CcmMsg))
+tryReadMsgs = do
+  bsm <- ask
+  rawMsgs <- liftIO . atomically $ tryReadInbox bsm
+  let dc s (sender,bs) =
+        case Store.decode bs of
+          Right msg -> return $ s Seq.|> (sender,msg)
+          Left e -> do
+            dlog ["error"] $
+              "Failed to decode msg from "
+              ++ show sender
+              ++ ": "
+              ++ show e
+            return s
+  foldM dc Seq.Empty rawMsgs

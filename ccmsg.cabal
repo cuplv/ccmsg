@@ -35,6 +35,7 @@ library
                     , Network.Ccm.VClock
                     , Network.Framed
                     , Control.Monad.DebugLog
+                    , Control.Monad.DebugLog.Selector
 
     -- Modules included in this library but not exported.
     -- other-modules:

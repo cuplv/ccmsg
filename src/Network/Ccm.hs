@@ -8,7 +8,7 @@ module Network.Ccm
   , blockSend
   , blockSendPartial
   , tryRecv
-  , runCcm
+  -- , runCcm
   , RClock
   , zeroRClock
   , MyAddr (..)
@@ -148,18 +148,18 @@ tryRecv = do
         return (ms Seq.>< ms')
   foldlM h Seq.empty rawMsgs
 
-{-| Run a 'CcmT' computation.  This needs 'IO' in order to operate TCP
-  connections and such. -}
-runCcm
-  :: (MonadIO m)
-  => Debugger
-  -> CacheMode
-  -> NodeId -- ^ The local node's ID.
-  -> Map NodeId MyAddr -- ^ Addresses of all nodes.
-  -> CcmT m a -> m a
-runCcm d cacheMode self addrs comp = do
-  bsm <- liftIO $ runBsm d self addrs
-  evalStateT (runReaderT comp bsm) (newCcmState cacheMode)
+-- {-| Run a 'CcmT' computation.  This needs 'IO' in order to operate TCP
+--   connections and such. -}
+-- runCcm
+--   :: (MonadIO m)
+--   => Debugger
+--   -> CacheMode
+--   -> NodeId -- ^ The local node's ID.
+--   -> Map NodeId MyAddr -- ^ Addresses of all nodes.
+--   -> CcmT m a -> m a
+-- runCcm d cacheMode self addrs comp = do
+--   bsm <- liftIO $ runBsm d self addrs
+--   evalStateT (runReaderT comp bsm) (newCcmState cacheMode)
 
 data Context
   = Context { ctxInboxEmpty :: STM Bool

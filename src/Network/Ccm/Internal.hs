@@ -25,6 +25,14 @@ import qualified Data.Sequence as Seq
 import Data.Store.TH (makeStore)
 import qualified Data.Store as Store
 
+data CcmConfig
+  = CcmConfig
+    { _cccTransmissionBatch :: PostCount
+    }
+  deriving (Show,Eq,Ord)
+
+makeLenses ''CcmConfig
+
 -- | A causal messaging post
 data Post
   = Post
@@ -44,6 +52,7 @@ data CcmState
   = CcmState
     { _sortState :: Sort.State
     , _sortOutput :: Seq (NodeId, ByteString)
+      -- ^ Causal-sorted post contents
     , _ccmPostStore :: Map NodeId (PostCount, Seq Post)
       -- ^ The store of posts that can be transmitted.
     , _inputClock :: VClock
@@ -111,7 +120,7 @@ post i sn = to $ \s ->
       ++ show sn
       ++ ")"
 
-type CcmT m = ReaderT Bsm (StateT CcmState m)
+type CcmT m = ReaderT (CcmConfig, Bsm) (StateT CcmState m)
 
 data CcmMsg
   = PostMsg Post
@@ -144,7 +153,7 @@ tryRecv = do
 
 tryReadMsgs :: (MonadLog m, MonadIO m) => CcmT m (Seq (NodeId, CcmMsg))
 tryReadMsgs = do
-  bsm <- ask
+  (_,bsm) <- ask
   rawMsgs <- liftIO . atomically $ tryReadInbox bsm
   let dc s (sender,bs) =
         case Store.decode bs of
@@ -181,3 +190,13 @@ handleCcmMsg sender = \case
     peerRequests . at (sender,i) .= Just sn
   HeartBeat c -> do
     peerClock sender %= joinVC c
+
+runCcm
+  :: CcmConfig
+  -> NodeId
+  -> Map NodeId MyAddr
+  -> CcmT (LogIO IO) a
+  -> LogIO IO a
+runCcm config self addrs comp = do
+  bsm <- runBsm mkNoDebugDbg self addrs
+  evalStateT (runReaderT comp (config,bsm)) newCcmState

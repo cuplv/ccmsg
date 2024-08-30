@@ -16,12 +16,13 @@ module Control.Monad.DebugLog
   , runLogStdoutC
   , runLogTQueue
   , passLogIO
+  , forkLogIO
   , passLogIOF
   ) where
 
 import Control.Monad.DebugLog.Selector
 
-import Control.Concurrent (forkIO)
+import Control.Concurrent (forkIO,ThreadId)
 import Control.Concurrent.STM
 import Control.Monad
 import Control.Monad.Except
@@ -143,12 +144,15 @@ runLogTQueue (LogIO m) l queue =
 -- | Transform a @'LogIO' l 'IO'@ action into an 'IO' action that has
 -- the same behavior.  This is useful when you need to fork off a new
 -- thread that should use the same logging system, for example.
-passLogIO :: LogIO IO a -> LogIO IO (IO a)
+passLogIO :: (MonadIO m) => LogIO m a -> LogIO m (m a)
 passLogIO (LogIO m) = LogIO $ do
   e <- ask
   return (runLogIO'' (LogIO m) e)
 
-passLogIOF :: (a -> LogIO IO b) -> LogIO IO (a -> IO b)
+forkLogIO :: LogIO IO () -> LogIO IO ThreadId
+forkLogIO m = liftIO.forkIO =<< passLogIO m
+
+passLogIOF :: (MonadIO m) => (a -> LogIO m b) -> LogIO m (a -> m b)
 passLogIOF f = LogIO $ do
   e <- ask
   return $ \a -> runLogIO'' (f a) e

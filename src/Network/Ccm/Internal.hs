@@ -140,8 +140,13 @@ data CcmMsg
 
 makeStore ''CcmMsg
 
+{- | Receive any messages from the network, handle them, and return any
+   causal-ordered post contents. -}
 tryRecv :: (MonadLog m, MonadIO m) => CcmT m (Seq (NodeId, ByteString))
 tryRecv = do
+  -- The sortOutput buffer should be empty before and after this
+  -- function.
+
   -- Pull messages from receiver queue, and decode them.  Decoding
   -- errors produce a log message ("error"), and then are skipped.
   msgs <- tryReadMsgs
@@ -190,6 +195,11 @@ handleCcmMsg sender = \case
     peerRequests . at (sender,i) .= Just sn
   HeartBeat c -> do
     peerClock sender %= joinVC c
+
+{- | Send any waiting messages, returning 'True' if there are more to
+   send. -}
+trySend :: (MonadLog m, MonadIO m) => CcmT m Bool
+trySend = undefined
 
 runCcm
   :: CcmConfig

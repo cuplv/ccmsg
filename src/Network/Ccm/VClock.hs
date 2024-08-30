@@ -42,6 +42,7 @@ makeStore ''VClock
 deleteVC :: NodeId -> VClock -> VClock
 deleteVC i (VClock m) = VClock (Map.delete i m)
 
+{- | Produce a clock with the events seen by both input clocks. -}
 meetVC :: VClock -> VClock -> VClock
 meetVC (VClock m1) (VClock m2) = VClock $ merge
   dropMissing
@@ -50,6 +51,7 @@ meetVC (VClock m1) (VClock m2) = VClock $ merge
   m1
   m2
 
+{- | Produce a clock with the events seen by either clock. -}
 joinVC :: VClock -> VClock -> VClock
 joinVC (VClock m1) (VClock m2) = VClock $ merge
   preserveMissing

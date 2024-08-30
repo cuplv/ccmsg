@@ -17,6 +17,7 @@ import Control.Monad (foldM)
 import Control.Monad.Reader
 import Control.Monad.State
 import Data.ByteString (ByteString)
+import Data.Foldable (for_)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Sequence (Seq)
@@ -39,16 +40,24 @@ makeStore ''Post
 seqNum :: SimpleGetter Post SeqNum
 seqNum = to $ \r -> nextNum (r^.postCreator) (r^.postDeps)
 
--- | A communication manager for a peer node
-data Liason
-
 data CcmState
   = CcmState
     { _sortState :: Sort.State
+    , _sortOutput :: Seq (NodeId, ByteString)
     , _ccmPostStore :: Map NodeId (PostCount, Seq Post)
+      -- ^ The store of posts that can be transmitted.
     , _inputClock :: VClock
+      -- ^ The clock of posts that have been received.
     , _knownClock :: VClock
+      -- ^ The input clock, plus all posts that have been referenced
+      -- in dependencies.
     , _ccmPeerClocks :: Map NodeId VClock
+      -- ^ The clocks reported as received (and output) by peers.
+    , _ccmPeerFrames :: Map NodeId SeqNum
+      -- ^ The next local post that should be sent to each peer.
+    , _peerRequests :: Map (NodeId, NodeId) SeqNum
+      -- ^ @(i1,i2) -> sn@ means that we should send @i2@'s posts
+      -- starting from @sn@ to @i1@.
     }
 
 makeLenses ''CcmState
@@ -56,10 +65,13 @@ makeLenses ''CcmState
 newCcmState :: CcmState
 newCcmState = CcmState
   { _sortState = Sort.newState
+  , _sortOutput = Seq.Empty
   , _ccmPostStore = Map.empty
   , _inputClock = zeroClock
   , _knownClock = zeroClock
   , _ccmPeerClocks = Map.empty
+  , _ccmPeerFrames = Map.empty
+  , _peerRequests = Map.empty
   }
 
 peerClock :: NodeId -> Lens' CcmState VClock
@@ -67,6 +79,14 @@ peerClock i = ccmPeerClocks . at i . non zeroClock
 
 postHistory :: NodeId -> Lens' CcmState (PostCount, Seq Post)
 postHistory i = ccmPostStore . at i . non (0, Seq.Empty)
+
+received :: NodeId -> SimpleGetter CcmState PostCount
+received i = to $ \s ->
+  let (count,posts) = s ^. postHistory i
+  in count + fromIntegral (Seq.length posts)
+
+peerFrame :: NodeId -> Lens' CcmState SeqNum
+peerFrame i = ccmPeerFrames . at i . non 0
 
 {- | Access a post by 'NodeId' and 'SeqNum'.  This will throw an error
    if the post has been garbage-collected or has not yet been
@@ -111,16 +131,16 @@ data CcmMsg
 
 makeStore ''CcmMsg
 
-tryRecv :: (MonadLog m, MonadIO m) => CcmT m (Seq ByteString)
+tryRecv :: (MonadLog m, MonadIO m) => CcmT m (Seq (NodeId, ByteString))
 tryRecv = do
+  -- Pull messages from receiver queue, and decode them.  Decoding
+  -- errors produce a log message ("error"), and then are skipped.
   msgs <- tryReadMsgs
   -- Then handle each message in turn, collecting any causal-ordered
   -- posts that can be delivered to the application.
-  --
-  -- Each message is either a post that (if in sender-order) can go
-  -- into the store and into the sorting machine, or it's a retransmit
-  -- / backup request that will modify the per-peer send triggers.
-  undefined
+  for_ msgs (uncurry handleCcmMsg)
+  -- Flush output buffer
+  sortOutput <<.= Seq.Empty
 
 tryReadMsgs :: (MonadLog m, MonadIO m) => CcmT m (Seq (NodeId, CcmMsg))
 tryReadMsgs = do
@@ -137,3 +157,27 @@ tryReadMsgs = do
               ++ show e
             return s
   foldM dc Seq.Empty rawMsgs
+
+handleCcmMsg
+  :: (MonadLog m, MonadIO m)
+  => NodeId
+  -> CcmMsg
+  -> CcmT m ()
+handleCcmMsg sender = \case
+  PostMsg p -> do
+    pc <- use $ received sender
+    if pc == p^.seqNum
+      then do
+        -- Deliver into store, input into sorter
+        undefined
+      else do
+        -- Send @Backup pc@ command to sender
+        undefined
+  Backup sn -> do
+    -- We assume that @sn@ is <= the number of local posts created so
+    -- far.
+    peerFrame sender .= sn
+  Retrans i sn -> do
+    peerRequests . at (sender,i) .= Just sn
+  HeartBeat c -> do
+    peerClock sender %= joinVC c

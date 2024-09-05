@@ -5,7 +5,9 @@ module Network.Ccm.Extra
   , sendAll
   , messagesToSend
   , allPeersReady
+  , TransmissionMode (..)
   , setTransmissionMode
   ) where
 
 import Network.Ccm.Internal
+import Network.Ccm.Types

@@ -4,6 +4,9 @@
 module Network.Ccm
   ( CcmT
   , runCcm
+  , CcmConfig (..)
+  , CacheMode (..)
+  , PostCount
   , NodeId
   , nodeId
   , MyAddr (..)
@@ -12,9 +15,6 @@ module Network.Ccm
   , exchange
   , readyForExchange
   , publish
-  -- , Context
-  -- , getContext
-  -- , allPeersReady
   ) where
 
 import Network.Ccm.Bsm.TCP (MyAddr (..))

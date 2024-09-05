@@ -23,27 +23,6 @@ import qualified Data.Map as Map
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 
-{- | Possibly-infinite 'SeqNum', where 'Nothing' represents infinity. -}
-type SeqNum' = Maybe SeqNum
-
-{- | Compare '<=' for 'SeqNum''s -}
-infLE :: SeqNum' -> SeqNum' -> Bool
-infLE (Just n1) (Just n2) = n1 <= n2
-infLE _ Nothing = True
-infLE _ _ = False
-
-{- | Comare '<' for 'SeqNum''s -}
-infLT :: SeqNum' -> SeqNum' -> Bool
-infLT n1 n2 = infLE n1 n2 && (n1 /= n2)
-
-{- | Construct a finite 'SeqNum''. -}
-snFin :: SeqNum -> SeqNum'
-snFin = Just
-
-{- | Construct the infinite 'SeqNum''. -}
-snInf :: SeqNum'
-snInf = Nothing
-
 {- | A reference to a post. -}
 data Ref
   = Ref

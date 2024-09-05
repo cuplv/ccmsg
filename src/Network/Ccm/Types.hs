@@ -6,6 +6,11 @@ module Network.Ccm.Types
   , nodeIdSize
   , NodeMap
   , SeqNum
+  , SeqNum'
+  , infLE
+  , infLT
+  , snFin
+  , snInf
   , PostCount
   , SendTarget (..)
   , TransmissionMode (..)
@@ -63,3 +68,24 @@ data CacheMode
   | CacheTemp -- ^ Cache all messages until they are universally delivered
   | CacheForever -- ^ Cache all messages forever
   deriving (Show,Eq,Ord)
+
+{- | Possibly-infinite 'SeqNum', where 'Nothing' represents infinity. -}
+type SeqNum' = Maybe SeqNum
+
+{- | Compare '<=' for 'SeqNum''s -}
+infLE :: SeqNum' -> SeqNum' -> Bool
+infLE (Just n1) (Just n2) = n1 <= n2
+infLE _ Nothing = True
+infLE _ _ = False
+
+{- | Comare '<' for 'SeqNum''s -}
+infLT :: SeqNum' -> SeqNum' -> Bool
+infLT n1 n2 = infLE n1 n2 && (n1 /= n2)
+
+{- | Construct a finite 'SeqNum''. -}
+snFin :: SeqNum -> SeqNum'
+snFin = Just
+
+{- | Construct the infinite 'SeqNum''. -}
+snInf :: SeqNum'
+snInf = Nothing

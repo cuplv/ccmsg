@@ -23,6 +23,7 @@ import qualified Data.Map as Map
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.Store.TH (makeStore)
 import qualified Data.Store as Store
 
@@ -66,9 +67,9 @@ data CcmState
       -- ^ The clocks reported as received (and output) by peers.
     , _ccmPeerFrames :: Map NodeId SeqNum
       -- ^ The next local post that should be sent to each peer.
-    , _peerRequests :: Map (NodeId, NodeId) SeqNum
-      -- ^ @(i1,i2) -> sn@ means that we should send @i2@'s posts
-      -- starting from @sn@ to @i1@.
+    , _ccmPeerRequests :: Map (NodeId, NodeId) (SeqNum, SeqNum)
+      -- ^ @(i1,i2) -> (sn1,sn2)@ means that we should send @i2@'s posts
+      -- with sequence numbers starting at @sn1@ and ending at @sn2 - 1@.
     }
 
 makeLenses ''CcmState
@@ -82,7 +83,7 @@ newCcmState = CcmState
   , _knownClock = zeroClock
   , _ccmPeerClocks = Map.empty
   , _ccmPeerFrames = Map.empty
-  , _peerRequests = Map.empty
+  , _ccmPeerRequests = Map.empty
   }
 
 peerClock :: NodeId -> Lens' CcmState VClock
@@ -91,13 +92,37 @@ peerClock i = ccmPeerClocks . at i . non zeroClock
 postHistory :: NodeId -> Lens' CcmState (PostCount, Seq Post)
 postHistory i = ccmPostStore . at i . non (0, Seq.Empty)
 
+{- | Get a post from the store by its sender Id and sequence number.  If
+   the post is not there, you get an error! -}
+postById :: NodeId -> SeqNum -> SimpleGetter CcmState Post
+postById i sn = to $ \s ->
+  let (count,posts) = s ^. postHistory i
+  in Seq.index posts (fromIntegral sn - fromIntegral count)
+
+-- received :: NodeId -> SimpleGetter CcmState PostCount
+-- received i = to $ \s ->
+--   let (count,posts) = s ^. postHistory i
+--   in count + fromIntegral (Seq.length posts)
+
+storedPostRange :: NodeId -> SimpleGetter CcmState (SeqNum, PostCount)
+storedPostRange i = to $ \s ->
+  let (count,posts) = s ^. postHistory i
+  in (count, fromIntegral (Seq.length posts))
+
 received :: NodeId -> SimpleGetter CcmState PostCount
 received i = to $ \s ->
-  let (count,posts) = s ^. postHistory i
-  in count + fromIntegral (Seq.length posts)
+  let (start,length) = s ^. storedPostRange i
+  in start + length
 
 peerFrame :: NodeId -> Lens' CcmState SeqNum
 peerFrame i = ccmPeerFrames . at i . non 0
+
+peerRequest :: NodeId -> NodeId -> Lens' CcmState (Maybe (SeqNum,SeqNum))
+peerRequest i1 i2 = ccmPeerRequests . at (i1,i2)
+
+openRequests :: SimpleGetter CcmState (Set (NodeId, NodeId))
+openRequests = to $ \s -> Map.keysSet (s ^. ccmPeerRequests)
+
 
 {- | Access a post by 'NodeId' and 'SeqNum'.  This will throw an error
    if the post has been garbage-collected or has not yet been
@@ -137,7 +162,8 @@ data CcmMsg
     -- the messages it has seen from the given 'NodeId', starting with
     -- the given 'SeqNum'.
   | HeartBeat VClock
-    -- ^ Notification that the sender has seen the given clock.
+    -- ^ Notification that the sender has received the contents of the
+    -- given clock.
   deriving (Show,Eq,Ord)
 
 makeStore ''CcmMsg
@@ -194,26 +220,43 @@ handleCcmMsg sender = \case
     -- far.
     peerFrame sender .= sn
   Retrans i sn -> do
-    peerRequests . at (sender,i) .= Just sn
+    -- Check post store range for @i@.  We must have @sn@, and we will
+    -- send up to the end of the store range.
+    (start, length) <- use $ storedPostRange i
+    if start <= sn && sn < (start + length)
+      then peerRequest sender i .= Just (sn, start + length)
+      else return ()
   HeartBeat c -> do
     peerClock sender %= joinVC c
 
+sendLimit' :: (MonadLog m, MonadIO m) => Maybe PostCount -> CcmT m ()
+sendLimit' mc = do
+  self <- getSelf
+  peers <- getPeers
+  -- Send for each frame that is not maxed out.
+  for_ peers $ \i -> do
+    snF <- use $ peerFrame i
+    snNext <- nextNum self <$> use inputClock
+    if snF < snNext
+      then undefined
+      else undefined
+  -- Send for each open retransmission request.
+  undefined
+
 {- | Send waiting messages, up to the transmission batch limit. -}
 sendLimit :: (MonadLog m, MonadIO m) => CcmT m ()
-sendLimit = undefined
+sendLimit = do
+  l <- view $ _1 . cccTransmissionBatch
+  sendLimit' (Just l)
 
 {- | Send all waiting messages, ignoring the transmission batch limit. -}
 sendAll :: (MonadLog m, MonadIO m) => CcmT m ()
-sendAll = undefined
-
-{- | Checks whether any messages are waiting to be sent. -}
-allSent :: (MonadLog m, MonadIO m) => CcmT m Bool
-allSent = undefined
+sendAll = sendLimit' Nothing
 
 {- | Communicate with peers.
 
    This will handle any messages that have been received, and will
-   send any waiting messages (up to the transmission batch limit. -}
+   send any waiting messages (up to the transmission batch limit). -}
 exchange :: (MonadLog m, MonadIO m) => CcmT m (Seq (NodeId, ByteString))
 exchange = do
   posts <- tryRecv
@@ -221,10 +264,15 @@ exchange = do
   return posts
 
 messagesToRecv :: (MonadLog m, MonadIO m) => CcmT m (STM Bool)
-messagesToRecv = undefined
+messagesToRecv = do
+  bsm <- view _2
+  return $ isEmptyInbox bsm
 
 messagesToSend :: (MonadLog m, MonadIO m) => CcmT m (STM Bool)
-messagesToSend = undefined
+messagesToSend = do
+  -- Does every peerFrame exceed our own PostStore entry?
+  -- Are the requests empty?
+  undefined
 
 {- | 'STM' test that returns 'True' if there there is material to
    exchange (send or receive) with peers.
@@ -232,7 +280,10 @@ messagesToSend = undefined
    This will always be 'True' immediately after using 'publish'.
 -}
 readyForExchange :: (MonadLog m, MonadIO m) => CcmT m (STM Bool)
-readyForExchange = undefined
+readyForExchange = do
+  r <- messagesToRecv
+  s <- messagesToSend
+  return $ (||) <$> r <*> s
 
 {- | Publish a new causal-ordered post, which is dependent on all posts meeting one of the following criteria:
 

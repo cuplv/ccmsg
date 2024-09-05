@@ -57,12 +57,12 @@ openBsmClients bsm addrs = do
   traverse_ f (Set.toList (getPeerIds bsm))
   return ()
 
-runBsm :: Debugger -> NodeId -> Map NodeId MyAddr -> LogIO IO Bsm
-runBsm d self addrs = do
+runBsm :: NodeId -> Map NodeId MyAddr -> LogIO IO Bsm
+runBsm self addrs = do
   let selfAddr = case Map.lookup self addrs of
         Just addr -> addr
         Nothing -> error "No addr for self"
-  bsm <- liftIO $ initBsm d self (Map.keysSet addrs)
+  bsm <- liftIO $ initBsm self (Map.keysSet addrs)
   openBsmServer selfAddr bsm
   openBsmClients bsm addrs
   return bsm

@@ -208,5 +208,5 @@ runCcm
   -> CcmT (LogIO IO) a
   -> LogIO IO a
 runCcm config self addrs comp = do
-  bsm <- runBsm mkNoDebugDbg self addrs
+  bsm <- runBsm self addrs
   evalStateT (runReaderT comp (config,bsm)) newCcmState

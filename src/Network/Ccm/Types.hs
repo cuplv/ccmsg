@@ -7,13 +7,6 @@ module Network.Ccm.Types
   , NodeMap
   , SeqNum
   , PostCount
-  , Debugger
-  , mkIODbg
-  , mkPrinterDbg
-  , mkNoDebugDbg
-  , runQD
-  , runQD'
-  , debug
   ) where
 
 import Control.Concurrent (forkIO)
@@ -43,45 +36,5 @@ nodeIdSize = case (size :: Size NodeId) of
   ConstSize i -> i
 
 nodeId = NodeId
-
-data Debugger
-  = Debugger (TQueue String)
-  | Printer
-  | NoDebug
-  | IODebugger (String -> IO ())
-
-debug :: Debugger -> String -> IO ()
-debug d s = case d of
-  Debugger chan -> atomically $ writeTQueue chan s
-  Printer -> putStrLn s
-  NoDebug -> return ()
-  IODebugger f -> f s
-
-mkIODbg = IODebugger
-
-mkPrinterDbg = Printer
-
-mkNoDebugDbg = NoDebug
-
-runQD :: IO (Debugger)
-runQD = do
-  q <- newTQueueIO
-  let printLoop = do
-        msg <- atomically $ readTQueue q
-        putStrLn $ "[Debug] " ++ msg
-        printLoop
-  forkIO $ printLoop
-  return $ Debugger q
-
-{-| Return a Queue Debugger, and the looping printer action that will
-  print the debug messages to the console. -}
-runQD' :: IO (Debugger, IO ())
-runQD' = do
-  q <- newTQueueIO
-  let printLoop = do
-        msg <- atomically $ readTQueue q
-        putStrLn $ "[Debug] " ++ msg
-        printLoop
-  return (Debugger q, printLoop)
 
 type NodeMap = Map NodeId (String,String)

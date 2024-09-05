@@ -35,14 +35,14 @@ runServer :: MyAddr -> Bsm -> LogIO IO ()
 runServer myaddr bsm = do
   dlog ["trace"] "Opening server..."
   serveM <- passLogIOF $ \(sock,addr) -> do
-    r <- liftIO $ acceptConnection (bsm^.bsmDbg) sock addr
+    r <- acceptConnection sock addr
     case r of
       Just target -> case Map.lookup target (bsm^.bsmPeers) of
         Just p -> do
-          forkLogIO $ runSender (bsm^.bsmDbg) target (p^.peerOutbox) sock
+          forkLogIO $ runSender target (p^.peerOutbox) sock
           liftIO.atomically $ writeTVar (p^.peerStatus) PSConnected
           tryM <- passLogIO $
-            runReceiver (bsm^.bsmDbg) target (bsm^.bsmInbox) sock
+            runReceiver target (bsm^.bsmInbox) sock
           catchM <- passLogIOF $ \e ->
             error $ "Caught: " ++ show (e :: IOException)
           liftIO $ catch tryM catchM
@@ -51,35 +51,27 @@ runServer myaddr bsm = do
       Nothing -> return ()
   serve (Host (myAddrHost myaddr)) (myAddrPort myaddr) serveM
 
--- testServer = do
---   c <- newBsmInbox
---   out <- newBsmOutbox
---   runServer mkPrinterDbg (MyAddr "127.0.0.1" "8099") c out
---   putStrLn "Test..."
-
 acceptConnection
-  :: Debugger
-  -> Socket
+  :: Socket
   -> SockAddr
-  -> IO (Maybe NodeId)
-acceptConnection dbg sock addr = do
-  bs <- recvUntil sock nodeIdSize
+  -> LogIO IO (Maybe NodeId)
+acceptConnection sock addr = do
+  bs <- liftIO $ recvUntil sock nodeIdSize
   case bs of
     Just bs -> do
       let nid = Store.decodeEx bs
-      debug dbg $ "Accepted connection from " ++ show nid
+      dlog ["trace"] $ "Accepted connection from " ++ show nid
       return (Just nid)
     Nothing -> do
-      debug dbg $ "Failed to init connection from " ++ show addr
+      dlog ["error"] $ "Failed to init connection from " ++ show addr
       return Nothing
 
 runReceiver
-  :: Debugger
-  -> NodeId
+  :: NodeId
   -> TBQueue (NodeId, ByteString)
   -> Socket
   -> LogIO IO ()
-runReceiver dbg i inbox sock = do
+runReceiver i inbox sock = do
   bs <- liftIO $ recvUntil sock sizeMsgSize
   case bs of
     Just bs -> do
@@ -90,14 +82,14 @@ runReceiver dbg i inbox sock = do
           liftIO $ atomically $ writeTBQueue inbox (i,bs2)
           -- let s = Store.decodeEx bs2
           dlog ["debug"] $ "Received msg from " ++ show i
-          runReceiver dbg i inbox sock
+          runReceiver i inbox sock
         Nothing ->
           dlog ["error"] $ "Connection closed (mid-msg): " ++ show i
     Nothing ->
       dlog ["error"] $ "Connection closed: " ++ show i
 
-runSender :: Debugger -> NodeId -> TBQueue PeerMessage -> Socket -> LogIO IO ()
-runSender d i outbox sock = do
+runSender :: NodeId -> TBQueue PeerMessage -> Socket -> LogIO IO ()
+runSender i outbox sock = do
   PMData bs <- liftIO.atomically $ readTBQueue outbox
   let n = ByteString.length bs
   let sendAction = do
@@ -111,7 +103,7 @@ runSender d i outbox sock = do
   -- catch sendAction $ \e ->
   --   -- debug d $ "[Send] Caught: " ++ show (e :: SomeException)
   --   dlog ["error"] $ "runSender: Caught: " ++ show (e :: SomeException)
-  runSender d i outbox sock
+  runSender i outbox sock
 
 recvUntil :: Socket -> Int -> IO (Maybe ByteString)
 recvUntil sock n = do
@@ -160,7 +152,7 @@ runClient' bsm targetNode (MyAddr host port) peer = do
   m <- passLogIOF $ \(sock,_) -> do
     -- putStrLn $ "Connected to " ++ show targetNode
     send sock (Store.encode (bsm^.bsmSelf))
-    forkLogIO $ runSender (bsm^.bsmDbg) targetNode (peer^.peerOutbox) sock
+    forkLogIO $ runSender targetNode (peer^.peerOutbox) sock
     liftIO.atomically $ writeTVar (peer^.peerStatus) PSConnected
-    runReceiver (bsm^.bsmDbg) targetNode (bsm^.bsmInbox) sock
+    runReceiver targetNode (bsm^.bsmInbox) sock
   liftIO $ connect host port m

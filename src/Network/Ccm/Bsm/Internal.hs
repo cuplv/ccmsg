@@ -42,8 +42,7 @@ makeLenses ''Peer
 
 data Bsm
   = Bsm
-    { _bsmDbg :: Debugger
-    , _bsmInbox :: TBQueue (NodeId, ByteString)
+    { _bsmInbox :: TBQueue (NodeId, ByteString)
     , _bsmPeers :: Map NodeId Peer
     , _bsmSelf :: NodeId
     }
@@ -99,8 +98,8 @@ shutdownPeer bsm n = case Map.lookup n (bsm^.bsmPeers) of
   Just p -> tryPutTMVar (p^.peerShutdown) () >> return ()
   Nothing -> error $ "Called shutdownPeer for unknown peer: " ++ show n
 
-initBsm :: Debugger -> NodeId -> Set NodeId -> IO (Bsm)
-initBsm d self ns = do
+initBsm :: NodeId -> Set NodeId -> IO (Bsm)
+initBsm self ns = do
   let mkPeer n = do
         status <- newTVarIO PSDisconnected
         sd <- newEmptyTMVarIO
@@ -115,8 +114,7 @@ initBsm d self ns = do
   peers <- Map.fromList
     <$> mapM mkPeer (Set.toList (Set.delete self ns))
   return $ Bsm
-    { _bsmDbg = d
-    , _bsmInbox = inbox
+    { _bsmInbox = inbox
     , _bsmPeers = peers
     , _bsmSelf = self
     }

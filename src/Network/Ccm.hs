@@ -3,8 +3,13 @@
 
 module Network.Ccm
   ( CcmT
+  , CcmState
   , runCcm
-  , CcmConfig (..)
+  , CcmConfig
+  , defaultCcmConfig
+  , cccTransmissionBatch
+  , cccCacheMode
+  , cccPersistMode
   , CacheMode (..)
   , PostCount
   , NodeId

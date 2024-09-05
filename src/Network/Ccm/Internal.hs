@@ -31,10 +31,18 @@ data CcmConfig
   = CcmConfig
     { _cccTransmissionBatch :: PostCount
     , _cccCacheMode :: CacheMode
+    , _cccPersistMode :: Bool
     }
   deriving (Show,Eq,Ord)
 
 makeLenses ''CcmConfig
+
+defaultCcmConfig :: CcmConfig
+defaultCcmConfig = CcmConfig
+  { _cccTransmissionBatch = 10
+  , _cccCacheMode = CacheTemp
+  , _cccPersistMode = True
+  }
 
 -- | A causal messaging post
 data Post
@@ -47,6 +55,25 @@ data Post
 
 makeLenses ''Post
 makeStore ''Post
+
+data CcmMsg
+  = PostMsg Post
+    -- ^ Post delivery: either a "primary" delivery from the post's
+    -- creator or a "secondary" delivery from a different peer in
+    -- response to a 'Retrans' request.
+  | Backup SeqNum
+    -- ^ Sender wants receiver to back up their own primary message
+    -- delivery to start again with the given 'SeqNum'.
+  | Retrans NodeId SeqNum
+    -- ^ Sender wants the receiver to send a one-time sequence of all
+    -- the messages it has seen from the given 'NodeId', starting with
+    -- the given 'SeqNum'.
+  | HeartBeat VClock
+    -- ^ Notification that the sender has received the contents of the
+    -- given clock.
+  deriving (Show,Eq,Ord)
+
+makeStore ''CcmMsg
 
 seqNum :: SimpleGetter Post SeqNum
 seqNum = to $ \r -> nextNum (r^.postCreator) (r^.postDeps)
@@ -70,6 +97,7 @@ data CcmState
     , _ccmPeerRequests :: Map (NodeId, NodeId) (SeqNum, SeqNum)
       -- ^ @(i1,i2) -> (sn1,sn2)@ means that we should send @i2@'s posts
       -- with sequence numbers starting at @sn1@ and ending at @sn2 - 1@.
+    , _transmissionMode :: TransmissionMode
     }
 
 makeLenses ''CcmState
@@ -84,6 +112,7 @@ newCcmState = CcmState
   , _ccmPeerClocks = Map.empty
   , _ccmPeerFrames = Map.empty
   , _ccmPeerRequests = Map.empty
+  , _transmissionMode = TMNormal
   }
 
 peerClock :: NodeId -> Lens' CcmState VClock
@@ -98,6 +127,17 @@ postById :: NodeId -> SeqNum -> SimpleGetter CcmState Post
 postById i sn = to $ \s ->
   let (count,posts) = s ^. postHistory i
   in Seq.index posts (fromIntegral sn - fromIntegral count)
+
+{- | Get a post sequence from the store by its sender Id and sequence
+   number.  If the starting post is not there, you get an error! -}
+postRange :: NodeId -> SeqNum -> Maybe PostCount -> SimpleGetter CcmState (Seq Post)
+postRange i sn mpc = to $ \s ->
+  let
+    (count,posts) = s ^. postHistory i
+    appendix = Seq.drop (fromIntegral sn - fromIntegral count) posts
+  in case mpc of
+    Just pc -> Seq.take (fromIntegral pc) appendix
+    Nothing -> appendix
 
 -- received :: NodeId -> SimpleGetter CcmState PostCount
 -- received i = to $ \s ->
@@ -123,6 +163,12 @@ peerRequest i1 i2 = ccmPeerRequests . at (i1,i2)
 openRequests :: SimpleGetter CcmState (Set (NodeId, NodeId))
 openRequests = to $ \s -> Map.keysSet (s ^. ccmPeerRequests)
 
+openFrames :: (Monad m) => CcmT m (Map NodeId SeqNum)
+openFrames = do
+  self <- getSelf
+  snNext <- nextNum self <$> use inputClock
+  frames <- use ccmPeerFrames
+  return $ Map.filter (\s -> s < snNext) frames
 
 {- | Access a post by 'NodeId' and 'SeqNum'.  This will throw an error
    if the post has been garbage-collected or has not yet been
@@ -148,25 +194,6 @@ post i sn = to $ \s ->
       ++ ")"
 
 type CcmT m = ReaderT (CcmConfig, Bsm) (StateT CcmState m)
-
-data CcmMsg
-  = PostMsg Post
-    -- ^ Post delivery: either a "primary" delivery from the post's
-    -- creator or a "secondary" delivery from a different peer in
-    -- response to a 'Retrans' request.
-  | Backup SeqNum
-    -- ^ Sender wants receiver to back up their own primary message
-    -- delivery to start again with the given 'SeqNum'.
-  | Retrans NodeId SeqNum
-    -- ^ Sender wants the receiver to send a one-time sequence of all
-    -- the messages it has seen from the given 'NodeId', starting with
-    -- the given 'SeqNum'.
-  | HeartBeat VClock
-    -- ^ Notification that the sender has received the contents of the
-    -- given clock.
-  deriving (Show,Eq,Ord)
-
-makeStore ''CcmMsg
 
 {- | Receive any messages from the network, handle them, and return any
    causal-ordered post contents. -}
@@ -207,14 +234,29 @@ handleCcmMsg
   -> CcmT m ()
 handleCcmMsg sender = \case
   PostMsg p -> do
-    pc <- use $ received sender
-    if pc == p^.seqNum
-      then do
-        -- Deliver into store, input into sorter
-        undefined
-      else do
+    -- The sender might be the original creator of the post, or the
+    -- sender might be retransmitting it.
+    let creator = p^.postCreator
+    pc <- use $ received creator
+    if
+      | p^.seqNum == pc -> do
+        -- Deliver into store
+        postHistory creator . _2 %= (Seq.|> p)
+        -- Input into sorter
+        output <- lift $ zoom sortState (Sort.sortRemote creator (p^.postDeps))
+        -- Each output is a NodeId referring to the next un-output
+        -- post in the post store.
+        for_ output $ \(i,sn) -> do
+          p <- use $ postById i sn
+          sortOutput %= (Seq.|> (p^.postCreator, p^.postContent))
+
+      | p^.seqNum > pc -> do
         -- Send @Backup pc@ command to sender
-        undefined
+        sendMsgMode sender (Backup pc)
+
+      | p^.seqNum < pc -> do
+        -- Nothing to do, we already have the message
+        return ()
   Backup sn -> do
     -- We assume that @sn@ is <= the number of local posts created so
     -- far.
@@ -230,18 +272,44 @@ handleCcmMsg sender = \case
     peerClock sender %= joinVC c
 
 sendLimit' :: (MonadLog m, MonadIO m) => Maybe PostCount -> CcmT m ()
-sendLimit' mc = do
+sendLimit' mpc = do
   self <- getSelf
   peers <- getPeers
-  -- Send for each frame that is not maxed out.
+  -- Send messages for each frame that is not maxed out.
   for_ peers $ \i -> do
     snF <- use $ peerFrame i
     snNext <- nextNum self <$> use inputClock
     if snF < snNext
-      then undefined
-      else undefined
+      then do
+        posts <- use $ postRange self snF mpc
+        -- Advance frame
+        peerFrame i += fromIntegral (length posts)
+        -- Bsm-send each post, according to transmission configuration
+        for_ posts $ \p -> sendMsgMode i (PostMsg p)
+      else
+        return ()
   -- Send for each open retransmission request.
-  undefined
+  rs <- use openRequests
+  for_ rs $ \i -> undefined
+
+sendMsgMode :: (MonadLog m, MonadIO m) => NodeId -> CcmMsg -> CcmT m ()
+sendMsgMode i m = do
+  tmode <- use transmissionMode
+  case tmode of
+    TMLossy d -> do
+      -- Randomness based on @d@ as a probability...
+      result <- undefined d
+      if result
+        then actuallySendMsg i m
+        else return ()
+    TMSubNetwork (SendTo s) | not $ Set.member i s -> return ()
+    _ -> actuallySendMsg i m
+
+actuallySendMsg :: (MonadLog m, MonadIO m) => NodeId -> CcmMsg -> CcmT m ()
+actuallySendMsg i m = do
+  bsm <- view $ _2
+  liftIO . atomically $
+    sendBsm bsm (SendTo $ Set.singleton i) (Store.encode m)
 
 {- | Send waiting messages, up to the transmission batch limit. -}
 sendLimit :: (MonadLog m, MonadIO m) => CcmT m ()
@@ -268,11 +336,13 @@ messagesToRecv = do
   bsm <- view _2
   return $ isEmptyInbox bsm
 
-messagesToSend :: (MonadLog m, MonadIO m) => CcmT m (STM Bool)
+messagesToSend :: (MonadLog m, MonadIO m) => CcmT m Bool
 messagesToSend = do
   -- Does every peerFrame exceed our own PostStore entry?
+  fsEmpty <- null <$> openFrames
   -- Are the requests empty?
-  undefined
+  rsEmpty <- null <$> use openRequests
+  return $ not (fsEmpty && rsEmpty)
 
 {- | 'STM' test that returns 'True' if there there is material to
    exchange (send or receive) with peers.
@@ -283,7 +353,7 @@ readyForExchange :: (MonadLog m, MonadIO m) => CcmT m (STM Bool)
 readyForExchange = do
   r <- messagesToRecv
   s <- messagesToSend
-  return $ (||) <$> r <*> s
+  return $ (||) <$> r <*> pure s
 
 {- | Publish a new causal-ordered post, which is dependent on all posts meeting one of the following criteria:
 
@@ -311,7 +381,9 @@ getPeers :: (Monad m) => CcmT m (Set NodeId)
 getPeers = getPeerIds . snd <$> ask
 
 allPeersReady :: (MonadLog m, MonadIO m) => CcmT m (STM Bool)
-allPeersReady = undefined
+allPeersReady = do
+  bsm <- view _2
+  return (allReady bsm)
 
 setTransmissionMode :: (Monad m) => TransmissionMode -> CcmT m ()
-setTransmissionMode = undefined
+setTransmissionMode t = transmissionMode .= t

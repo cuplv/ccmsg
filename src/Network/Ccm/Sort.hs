@@ -66,7 +66,7 @@ data State
   = State
     { _blockMap :: Map NodeId Block
     , _outputClock :: VClock
-    , _outputBuffer :: Seq NodeId
+    , _outputBuffer :: Seq (NodeId,SeqNum)
     }
 
 makeLenses ''State
@@ -98,9 +98,9 @@ sortLocal i =
   outputClock <<%= tick i
 
 {- | Input the 'NodeId' sender and 'VClock' dependencies of a new post
-   received from the network, returning a sequence of 'NodeId's
-   representing output posts that can now be passed to the application
-   in causal order.
+   received from the network, returning a sequence of reference to
+   output posts that can now be passed to the application in causal
+   order.
 
    If any causal dependencies of the new post have not yet been
    received, 'Seq.Empty' will be returned.
@@ -109,7 +109,7 @@ sortRemote
   :: (Monad m)
   => NodeId
   -> VClock
-  -> StateT State m (Seq NodeId)
+  -> StateT State m (Seq (NodeId,SeqNum))
 sortRemote i c = do
   let r = mkRef i c
   -- This function should always begin and end with an empty
@@ -148,9 +148,8 @@ tryOutput r = do
     Right () -> do
       -- If so, add the post to the output clock and the output
       -- buffer.
-      let i = r^.sender
-      outputClock %= tick i
-      outputBuffer %= (Seq.|> i)
+      outputClock %= tick (r^.sender)
+      outputBuffer %= (Seq.|> (r^.msgId))
       return True
     Left x -> do
       -- If not, defer the post until the given remote post (x) has

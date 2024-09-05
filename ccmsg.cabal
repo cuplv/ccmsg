@@ -23,22 +23,27 @@ extra-source-files: CHANGELOG.md
 
 library
     exposed-modules:  Network.Ccm
-                    -- , Network.Ccm.Algorithm
-                    , Network.Ccm.Types
                     , Network.Ccm.Bsm
-                    , Network.Ccm.Bsm.Internal
-                    , Network.Ccm.Bsm.TCP
-                    , Network.Ccm.Internal
+                    -- , Network.Ccm.Bsm.Internal
+                    -- , Network.Ccm.Bsm.TCP
+                    , Network.Ccm.Extra
+                    -- , Network.Ccm.Internal
                     , Network.Ccm.Lens
-                    , Network.Ccm.Sort
-                    -- , Network.Ccm.State
-                    , Network.Ccm.VClock
+                    -- , Network.Ccm.Sort
+                    -- , Network.Ccm.Types
+                    -- , Network.Ccm.VClock
                     , Network.Framed
                     , Control.Monad.DebugLog
                     , Control.Monad.DebugLog.Selector
 
     -- Modules included in this library but not exported.
-    -- other-modules:
+    other-modules:
+        Network.Ccm.Bsm.Internal,
+        Network.Ccm.Bsm.TCP,
+        Network.Ccm.Internal,
+        Network.Ccm.Sort,
+        Network.Ccm.Types,
+        Network.Ccm.VClock
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:

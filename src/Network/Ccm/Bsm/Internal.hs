@@ -21,11 +21,6 @@ data PeerMessage
   = PMData ByteString
   deriving (Show,Eq,Ord)
 
-data SendTarget
-  = SendTo (Set NodeId)
-  | SendAll
-  deriving (Show,Eq,Ord)
-
 data PeerStatus
   = PSConnected
   | PSDisconnected

@@ -1,58 +1,40 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TemplateHaskell #-}
 
-module Network.Ccm where
-  -- ( CcmT
-  -- , getSelf
-  -- , getOthers
-  -- , blockSend
-  -- , blockSendPartial
-  -- , tryRecv
-  -- -- , runCcm
-  -- , RClock
-  -- , zeroRClock
-  -- , MyAddr (..)
-  -- , NodeId (..)
-  -- , nodeId
-  -- , CausalError (..)
-  -- , showCausalError'
-  -- , Debugger
-  -- , mkIODbg
-  -- , mkPrinterDbg
-  -- , mkNoDebugDbg
-  -- , runQD
-  -- , runQD'
-  -- , debug
-  -- , liftIO
+module Network.Ccm
+  ( CcmT
+  , runCcm
+  , NodeId
+  , nodeId
+  , MyAddr (..)
+  , getSelf
+  , getPeers
+  , exchange
+  , readyForExchange
+  , publish
   -- , Context
-  -- , context
+  -- , getContext
   -- , allPeersReady
-  -- , newNetworkActivity
-  -- , SendTarget (..)
-  -- , CacheMode (..)
-  -- ) where
+  ) where
 
--- import Network.Ccm.Algorithm
-import Network.Ccm.Bsm
-import Network.Ccm.Lens
--- import Network.Ccm.State
+import Network.Ccm.Bsm.TCP (MyAddr (..))
+import Network.Ccm.Internal
 import Network.Ccm.Types
-import Network.Ccm.VClock
 
-import Control.Concurrent (forkIO, threadDelay, killThread)
-import Control.Concurrent.STM
-import Control.Monad.Except
-import Control.Monad.Reader
-import Control.Monad.State
-import Data.ByteString (ByteString)
-import Data.Foldable (toList,foldMap,foldlM)
-import Data.Map (Map)
-import Data.Sequence (Seq)
-import qualified Data.Sequence as Seq
-import Data.Set (Set)
-import qualified Data.Set as Set
-import qualified Data.Store as Store
-import Data.Traversable (for)
+-- import Control.Concurrent (forkIO, threadDelay, killThread)
+-- import Control.Concurrent.STM
+-- import Control.Monad.Except
+-- import Control.Monad.Reader
+-- import Control.Monad.State
+-- import Data.ByteString (ByteString)
+-- import Data.Foldable (toList,foldMap,foldlM)
+-- import Data.Map (Map)
+-- import Data.Sequence (Seq)
+-- import qualified Data.Sequence as Seq
+-- import Data.Set (Set)
+-- import qualified Data.Set as Set
+-- import qualified Data.Store as Store
+-- import Data.Traversable (for)
 
 -- {-| Representation of causal dependencies. -}
 -- data RClock = RClock VClock

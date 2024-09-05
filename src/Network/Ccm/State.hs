@@ -57,12 +57,6 @@ import GHC.Exts (toList,fromList)
 
 type MsgId = (NodeId, SeqNum)
 
-data CacheMode
-  = CacheNone -- ^ Do not cache messages, disabling retransmission
-  | CacheTemp -- ^ Cache all messages until they are universally delivered
-  | CacheForever -- ^ Cache all messages forever
-  deriving (Show,Eq,Ord)
-
 data AppMsg
   = AppMsg { _msgClock :: VClock
            , _msgPayload :: ByteString

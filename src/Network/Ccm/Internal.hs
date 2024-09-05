@@ -22,12 +22,14 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
+import Data.Set (Set)
 import Data.Store.TH (makeStore)
 import qualified Data.Store as Store
 
 data CcmConfig
   = CcmConfig
     { _cccTransmissionBatch :: PostCount
+    , _cccCacheMode :: CacheMode
     }
   deriving (Show,Eq,Ord)
 
@@ -196,10 +198,50 @@ handleCcmMsg sender = \case
   HeartBeat c -> do
     peerClock sender %= joinVC c
 
-{- | Send any waiting messages, returning 'True' if there are more to
-   send. -}
-trySend :: (MonadLog m, MonadIO m) => CcmT m Bool
-trySend = undefined
+{- | Send waiting messages, up to the transmission batch limit. -}
+sendLimit :: (MonadLog m, MonadIO m) => CcmT m ()
+sendLimit = undefined
+
+{- | Send all waiting messages, ignoring the transmission batch limit. -}
+sendAll :: (MonadLog m, MonadIO m) => CcmT m ()
+sendAll = undefined
+
+{- | Checks whether any messages are waiting to be sent. -}
+allSent :: (MonadLog m, MonadIO m) => CcmT m Bool
+allSent = undefined
+
+{- | Communicate with peers.
+
+   This will handle any messages that have been received, and will
+   send any waiting messages (up to the transmission batch limit. -}
+exchange :: (MonadLog m, MonadIO m) => CcmT m (Seq (NodeId, ByteString))
+exchange = do
+  posts <- tryRecv
+  sendLimit
+  return posts
+
+messagesToRecv :: (MonadLog m, MonadIO m) => CcmT m (STM Bool)
+messagesToRecv = undefined
+
+messagesToSend :: (MonadLog m, MonadIO m) => CcmT m (STM Bool)
+messagesToSend = undefined
+
+{- | 'STM' test that returns 'True' if there there is material to
+   exchange (send or receive) with peers.
+
+   This will always be 'True' immediately after using 'publish'.
+-}
+readyForExchange :: (MonadLog m, MonadIO m) => CcmT m (STM Bool)
+readyForExchange = undefined
+
+{- | Publish a new causal-ordered post, which is dependent on all posts meeting one of the following criteria:
+
+   1. Any post that has been previously published by this node.
+
+   2. Any post that has been returned by calls to 'exchange' or 'tryRecv'.
+-}
+publish :: (MonadLog m, MonadIO m) => ByteString -> CcmT m ()
+publish = undefined
 
 runCcm
   :: CcmConfig
@@ -210,3 +252,15 @@ runCcm
 runCcm config self addrs comp = do
   bsm <- runBsm self addrs
   evalStateT (runReaderT comp (config,bsm)) newCcmState
+
+getSelf :: (Monad m) => CcmT m NodeId
+getSelf = getSelfId . snd <$> ask
+
+getPeers :: (Monad m) => CcmT m (Set NodeId)
+getPeers = getPeerIds . snd <$> ask
+
+allPeersReady :: (MonadLog m, MonadIO m) => CcmT m (STM Bool)
+allPeersReady = undefined
+
+setTransmissionMode :: (Monad m) => TransmissionMode -> CcmT m ()
+setTransmissionMode = undefined

@@ -4,10 +4,11 @@ module State where
 
 import Config
 
-import Control.Monad.State
+import Control.Monad.DebugLog
 import Network.Ccm
 import Network.Ccm.Lens
 
+import Control.Monad.State
 import Data.Map (Map)
 import qualified Data.Map as Map
 
@@ -16,28 +17,26 @@ data ExState
     { _stNextSend :: Int
     , _stReceived :: Map NodeId Int
     , _stConf :: NodeConfig
-    , _stDebugger :: Debugger
     }
 
 makeLenses ''ExState
 
-type ExMsg = (NodeId, Int)
+type ExMsg = Int
 
-type ExT m = StateT ExState (CcmT m)
+type ExM = StateT ExState (CcmT (LogIO IO))
 
-exStateInit :: Debugger -> NodeConfig -> ExState
-exStateInit d c = ExState
+exStateInit :: NodeConfig -> ExState
+exStateInit c = ExState
   { _stNextSend = 0
   , _stReceived = Map.empty
   , _stConf = c
-  , _stDebugger = d
   }
 
-runExT :: (MonadIO m) => ExT m a -> Debugger -> NodeConfig -> m a
-runExT m d c =
+runExM :: ExM a -> NodeConfig -> LogIO IO a
+runExM m c =
   let
     self = c ^. cNodeId
     net = c ^. cExpr . cNetwork
-    s = exStateInit d c
+    s = exStateInit c
   in
-    runCcm d CacheTemp self net (evalStateT m s)
+    runCcm defaultCcmConfig self net (evalStateT m s)

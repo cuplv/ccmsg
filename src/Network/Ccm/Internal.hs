@@ -86,7 +86,7 @@ data CcmState
     , _ccmPostStore :: Map NodeId (PostCount, Seq Post)
       -- ^ The store of posts that can be transmitted.
     , _inputClock :: VClock
-      -- ^ The clock of posts that have been received.
+      -- ^ The clock of posts that have been received or published locally.
     , _knownClock :: VClock
       -- ^ The input clock, plus all posts that have been referenced
       -- in dependencies.
@@ -355,14 +355,33 @@ readyForExchange = do
   s <- messagesToSend
   return $ (||) <$> r <*> pure s
 
-{- | Publish a new causal-ordered post, which is dependent on all posts meeting one of the following criteria:
+{- | Publish a new causal-ordered post, which is dependent on all posts
+   that meet one of the following criteria:
 
-   1. Any post that has been previously published by this node.
+   1. Any post that has been published by this node.
 
    2. Any post that has been returned by calls to 'exchange' or 'tryRecv'.
+
+   Note that 'publish' does not directly send any messages.  Future
+   calls to 'exchange' will transmit the new post to the network.
 -}
 publish :: (MonadLog m, MonadIO m) => ByteString -> CcmT m ()
-publish = undefined
+publish bs = do
+  self <- getSelf
+  -- Get dependency clock for new post
+  c <- lift . zoom sortState $ Sort.sortLocal self
+  let
+    post = Post
+      { _postCreator = self
+      , _postDeps = c
+      , _postContent = bs
+      }
+  -- Add post to store
+  postHistory self . _2 %= (Seq.|> post)
+  -- Tick input clock
+  inputClock %= tick self
+  -- Tick known clock
+  knownClock %= tick self
 
 runCcm
   :: CcmConfig

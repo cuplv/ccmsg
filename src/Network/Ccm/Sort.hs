@@ -8,6 +8,7 @@ module Network.Ccm.Sort
   , newState
   , sortLocal
   , sortRemote
+  , getOutputClock
   ) where
 
 import Prelude hiding (sort)
@@ -196,3 +197,7 @@ filterMSeq test s = do
       if result
         then (a Seq.:<|) <$> filterMSeq test s
         else filterMSeq test s
+
+{- | Get the current output clock. -}
+getOutputClock :: (Monad m) => SortT m VClock
+getOutputClock = use outputClock

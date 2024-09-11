@@ -1,13 +1,12 @@
-\(debugLevel : Natural) ->
 \(nodeId : Natural) ->
 
 { nodeId
-, debugLevel
+, debugLog = ["progress","backup","post","exchange","ccm::comm"]
 , experiment =
   { msgCount = 1000
   , recvTimeout = Some 5000
   , setupTimeout = Some 10000
-  , sendChance = Some 0.9
+  , sendChance = Some 0.8
   , network =
       [ { id = 0, host = "127.0.0.1", port = "8050" }
       , { id = 1, host = "127.0.0.1", port = "8051" }

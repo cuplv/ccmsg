@@ -23,9 +23,26 @@ import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import qualified Data.Store as Store
 import System.Environment (getArgs)
+import System.Exit (exitFailure)
+import System.IO (stderr,hPutStrLn)
 import System.Random
 import Data.Time.Clock
 import Data.Time.Format
+
+-- Microseconds between progress logs
+progressLogInterval :: Int
+progressLogInterval = 3000000
+
+pds :: String -> IO Selector
+pds s = case parseDebugSelector s of
+  Right ds -> return ds
+  Left e -> do
+    hPutStrLn stderr $
+      "Debug selector \""
+      ++ s
+      ++ "\" could not be parsed: "
+      ++ show e
+    exitFailure
 
 main :: IO ()
 main = do
@@ -34,9 +51,12 @@ main = do
     [] -> error "Called without config file argument"
     _ -> error "Called with more than one argument"
   conf <- inputConfig confFile
-  let ds = (fromRight (error "parse fail") . parseDebugSelector $ "*") :: Selector
-
-  flip runLogStdoutC (Set.singleton ds) $ do
+  -- let ds = (fromRight (error "debug selector parse fail") . parseDebugSelector $ "trace") :: Selector
+  dss <- Set.fromList <$> mapM pds (conf^.cDebugLog)
+    -- dss = case parseDebugSelector (conf^.cDebugLog) of
+    --   Right ds -> ds
+    --   Left e -> error $ "Debug selector could not be parsed: " ++ show e
+  flip runLogStdoutC dss $ do
     dlog ["trace"] $ "Running " ++ show (conf ^. cNodeId)
     runExM nodeScript conf
     return ()
@@ -105,14 +125,25 @@ nodeScript = do
       t0 <- liftIO $ getCurrentTime
       self <- lift Ccm.getSelf
       dlog ["trace"] $ "Entering main loop"
-      nodeLoop
+
+      statusTask <- liftIO newEmptyTMVarIO
+      statusDone <- liftIO newEmptyTMVarIO
+      liftIO.forkIO.forever $ do
+        atomically $ putTMVar statusTask ()
+        atomically $ takeTMVar statusDone
+        threadDelay progressLogInterval -- 1ms
+
+      nodeLoop statusTask statusDone
       t1 <- liftIO $ getCurrentTime
       let td = diffUTCTime t1 t0
       liftIO.putStrLn $ "Finished in " ++ showResultSeconds td
       -- Keep exchanging so everyone can finish
-      testReady <- lift $ Ccm.readyForExchange
       forever $ do
+        s <- lift $ Extra.messagesToSend
+        dlog ["exchange"] $ "Entered post-completion loop with " ++ show s
+        testReady <- lift $ Ccm.readyForExchange
         liftIO.atomically $ check =<< testReady
+        dlog ["exchange"] $ "Post-completion exchange..."
         lift Ccm.exchange
       -- loopForMicros 5000000 testReady $ \_ -> do
       --   lift Ccm.exchange
@@ -138,8 +169,8 @@ checkAllDone = do
     else dlog ["trace"] $ "Done."
   return $ allReceived
 
-nodeLoop :: ExM ()
-nodeLoop = untilJust $ do
+nodeLoop :: TMVar () -> TMVar () -> ExM ()
+nodeLoop statusTask statusDone = untilJust $ do
   self <- lift Ccm.getSelf
   total <- use $ stConf.cExpr.cMsgCount
   next <- use stNextSend
@@ -152,9 +183,19 @@ nodeLoop = untilJust $ do
   -- Exchange for 10ms
   testReady <- lift $ Ccm.readyForExchange
   loopForMicros 10000 testReady $ \_ -> do
+    -- dlog ["exchange"] $ "Pre-completion exchange..."
     newPosts <- (lift Ccm.exchange) :: ExM (Seq (Ccm.NodeId, ByteString))
     -- Decode and record receipt of posts
     accPosts (newPosts & each . _2 %~ Store.decodeEx)
+
+  statusTime <- liftIO.atomically $ tryTakeTMVar statusTask
+  case statusTime of
+    Just () -> do
+      -- print status, replace flag
+      recvd <- use stReceived
+      dlog ["progress"] $ show recvd
+      liftIO.atomically $ putTMVar statusDone ()
+    Nothing -> return ()
 
   continue <- not <$> checkAllDone
   if continue
@@ -164,6 +205,11 @@ nodeLoop = untilJust $ do
 accPosts :: Seq (Ccm.NodeId, ExMsg) -> ExM ()
 accPosts Seq.Empty = return ()
 accPosts ((creator,n) Seq.:<| ms) = do
+  dlog ["post"] $
+    "Got post "
+    ++ show n
+    ++ " from node "
+    ++ show creator
   stReceived . at creator %= \v -> case v of
     Just n' | n' > n -> Just n'
     _ -> Just n

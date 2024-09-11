@@ -26,7 +26,7 @@ data NodeConfig
   = NodeConfig
     { _cExpr :: ExConfig
     , _cNodeId :: NodeId
-    , _cDebugLevel :: Int
+    , _cDebugLog :: [String]
     }
 
 makeLenses ''NodeConfig
@@ -55,7 +55,7 @@ nodeConfigD :: Dhall.Decoder NodeConfig
 nodeConfigD = Dhall.record $ NodeConfig
   <$> Dhall.field "experiment" exConfigD
   <*> Dhall.field "nodeId" nodeIdD
-  <*> Dhall.field "debugLevel" (fromIntegral <$> Dhall.natural)
+  <*> Dhall.field "debugLog" (Dhall.list Dhall.string)
 
 inputConfig :: String -> IO NodeConfig
 inputConfig s = Dhall.input nodeConfigD (pack s)

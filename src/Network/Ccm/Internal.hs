@@ -52,10 +52,18 @@ data Post
     , _postDeps :: VClock
     , _postContent :: ByteString
     }
-  deriving (Show,Eq,Ord)
+  deriving (Eq,Ord)
 
 makeLenses ''Post
 makeStore ''Post
+
+instance Show Post where
+  show p =
+    "Post("
+    ++ show (p^.postCreator)
+    ++ ", "
+    ++ show (p^.postDeps)
+    ++ ")"
 
 data CcmMsg
   = PostMsg Post
@@ -261,6 +269,11 @@ handleCcmMsg sender = \case
   Backup sn -> do
     -- We assume that @sn@ is <= the number of local posts created so
     -- far.
+    dlog ["backup"] $
+      "Backed up to "
+      ++ show sn
+      ++ " for node "
+      ++ show sender
     peerFrame sender .= sn
   Retrans i sn -> do
     -- Check post store range for @i@.  We must have @sn@, and we will
@@ -295,6 +308,11 @@ sendLimit' mpc = do
 
 sendMsgMode :: (MonadLog m, MonadIO m) => NodeId -> CcmMsg -> CcmT m ()
 sendMsgMode i m = do
+  dlog ["ccm","comm"] $
+    "Send to "
+    ++ show i
+    ++ " msg "
+    ++ show m
   tmode <- use transmissionMode
   case tmode of
     TMLossy d -> do
@@ -304,8 +322,12 @@ sendMsgMode i m = do
       result <- (<= d) <$> randomRIO (0,1)
       if result
         then actuallySendMsg i m
-        else return ()
-    TMSubNetwork (SendTo s) | not $ Set.member i s -> return ()
+        else do
+          dlog ["ccm","comm"] $ "Send \"failed\" due to TMLossy mode"
+          return ()
+    TMSubNetwork (SendTo s) | not $ Set.member i s -> do
+      dlog ["ccm","comm"] $ "Send \"failed\" due to TMSubNetwork mode"
+      return ()
     _ -> actuallySendMsg i m
 
 actuallySendMsg :: (MonadLog m, MonadIO m) => NodeId -> CcmMsg -> CcmT m ()
@@ -337,7 +359,7 @@ exchange = do
 messagesToRecv :: (MonadLog m, MonadIO m) => CcmT m (STM Bool)
 messagesToRecv = do
   bsm <- view _2
-  return $ isEmptyInbox bsm
+  return $ not <$> isEmptyInbox bsm
 
 messagesToSend :: (MonadLog m, MonadIO m) => CcmT m Bool
 messagesToSend = do

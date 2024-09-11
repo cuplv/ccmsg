@@ -93,7 +93,7 @@ instance (MonadError e m) => MonadError e (LogIO m) where
   catchError (LogIO m) f = LogIO $
     catchError m (\e -> runLogIO' $ f e)
 
-anyMatch l ls = null $ Set.filter (`selectorMatch` l) ls
+anyMatch l ls = not.null $ Set.filter (`selectorMatch` l) ls
 
 instance (MonadIO m) => MonadLog (LogIO m) where
   dlog l s = LogIO $ do

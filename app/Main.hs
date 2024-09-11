@@ -11,7 +11,7 @@ import Network.Ccm.Lens
 
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.STM
-import Control.Monad (filterM,when)
+import Control.Monad (filterM,when,forever)
 import Control.Monad.State
 import Data.ByteString (ByteString)
 import Data.Either (fromRight)
@@ -38,9 +38,8 @@ main = do
 
   flip runLogStdoutC (Set.singleton ds) $ do
     dlog ["trace"] $ "Running " ++ show (conf ^. cNodeId)
-    (td) <- runExM nodeScript conf
-    -- putStrLn $ "Causal deferrals: " ++ show errors
-    liftIO.putStrLn $ "Finished in " ++ showResultSeconds td
+    runExM nodeScript conf
+    return ()
 
 showResultSeconds :: NominalDiffTime -> String
 showResultSeconds = formatTime defaultTimeLocale "%3Ess"
@@ -92,6 +91,10 @@ loopForMicros us input body = do
 nodeScript :: ExM (NominalDiffTime)
 nodeScript = do
   sto <- use $ stConf . cExpr . cSetupTimeout
+  sendChance <- use $ stConf . cExpr . cSendChance
+  case sendChance of
+    Just d -> lift $ Extra.setTransmissionMode (Extra.TMLossy d)
+    Nothing -> return ()
   testReady <- lift Extra.allPeersReady
   result <- case sto of
     Just ms -> atomicallyTimed (ms * 1000) (check =<< testReady)
@@ -105,11 +108,15 @@ nodeScript = do
       nodeLoop
       t1 <- liftIO $ getCurrentTime
       let td = diffUTCTime t1 t0
-      -- Exchange for 1s more to make sure everyone finishes.
+      liftIO.putStrLn $ "Finished in " ++ showResultSeconds td
+      -- Keep exchanging so everyone can finish
       testReady <- lift $ Ccm.readyForExchange
-      loopForMicros 1000000 testReady $ \_ -> do
+      forever $ do
+        liftIO.atomically $ check =<< testReady
         lift Ccm.exchange
-        return ()
+      -- loopForMicros 5000000 testReady $ \_ -> do
+      --   lift Ccm.exchange
+      --   return ()
 
       return (td)
 

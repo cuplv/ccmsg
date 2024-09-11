@@ -26,6 +26,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Store.TH (makeStore)
 import qualified Data.Store as Store
+import System.Random
 
 data CcmConfig
   = CcmConfig
@@ -297,8 +298,10 @@ sendMsgMode i m = do
   tmode <- use transmissionMode
   case tmode of
     TMLossy d -> do
-      -- Randomness based on @d@ as a probability...
-      result <- undefined d
+      -- Randomness based on @d@ as a probability... take a random
+      -- 'Double' on the interval [0,1], and send the message if it
+      -- matches or falls below @d@.
+      result <- (<= d) <$> randomRIO (0,1)
       if result
         then actuallySendMsg i m
         else return ()

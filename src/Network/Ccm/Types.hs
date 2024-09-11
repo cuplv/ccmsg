@@ -55,8 +55,10 @@ data SendTarget
 
 data TransmissionMode
   = TMLossy Double
-    -- ^ Fail to send messages according to the given probability
-    -- (between @0@ and @1@).
+    -- ^ Successfully send messages according to the given probability
+    -- (between @0@ and @1@).  For example, @'TMLossy' 0.75@ means
+    -- that each message has a @3/4@ chance of being successfully
+    -- sent, and a @1/4@ chance of being "dropped" (not sent).
   | TMNormal
     -- ^ Attempt to send all messages.
   | TMSubNetwork SendTarget

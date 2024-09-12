@@ -83,13 +83,14 @@ untilJust m = do
     Just a -> return a
     Nothing -> untilJust m
 
-{- | Repeatedly perform the given 'STM' action, feeding the result into
-   the given function, until the given microseconds elapse.
+{- | Repeatedly perform the given 'ExM (STM a)' action, feeding the
+   result into the given function, until the given microseconds
+   elapse.
 
    The timer can only preempt the 'STM' action, so if the body is
    long-running, the loop could end up running for significantly
    longer than the given time limit. -}
-loopForMicros :: Int -> STM a -> (a -> ExM ()) -> ExM ()
+loopForMicros :: Int -> ExM (STM a) -> (a -> ExM ()) -> ExM ()
 loopForMicros us input body = do
   v <- liftIO newEmptyTMVarIO
   liftIO.forkIO $ do
@@ -97,11 +98,12 @@ loopForMicros us input body = do
     atomically $ putTMVar v ()
 
   untilJust $ do
+    inputTest <- input
     result <- liftIO.atomically $
       -- Timer gets priority
       (const Nothing <$> takeTMVar v)
       `orElse`
-      (Just <$> input)
+      (Just <$> inputTest)
     case result of
       -- Timer has expired, end loop.
       Nothing -> return (Just ())
@@ -139,17 +141,12 @@ nodeScript = do
       liftIO.putStrLn $ "Finished in " ++ showResultSeconds td
       -- Keep exchanging so everyone can finish
       forever $ do
-        s <- lift $ Extra.messagesToSend
-        dlog ["exchange"] $ "Entered post-completion loop with " ++ show s
         testReady <- lift $ Ccm.readyForExchange
         liftIO.atomically $ check =<< testReady
         dlog ["exchange"] $ "Post-completion exchange..."
         lift Ccm.exchange
-      -- loopForMicros 5000000 testReady $ \_ -> do
-      --   lift Ccm.exchange
-      --   return ()
 
-      return (td)
+      return td
 
 checkAllDone :: ExM Bool
 checkAllDone = do
@@ -181,10 +178,12 @@ nodeLoop statusTask statusDone = untilJust $ do
     stNextSend += 1
 
   -- Exchange for 10ms
-  testReady <- lift $ Ccm.readyForExchange
+  let
+    testReady = do
+      test <- lift $ Ccm.readyForExchange
+      return (check =<< test)
   loopForMicros 10000 testReady $ \_ -> do
-    -- dlog ["exchange"] $ "Pre-completion exchange..."
-    newPosts <- (lift Ccm.exchange) :: ExM (Seq (Ccm.NodeId, ByteString))
+    newPosts <- lift Ccm.exchange
     -- Decode and record receipt of posts
     accPosts (newPosts & each . _2 %~ Store.decodeEx)
 

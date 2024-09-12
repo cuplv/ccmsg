@@ -13,7 +13,7 @@ import Network.Ccm.Types
 import Network.Ccm.VClock
 
 import Control.Concurrent.STM
-import Control.Monad (foldM)
+import Control.Monad (foldM,when)
 import Control.Monad.Reader
 import Control.Monad.State
 import Data.ByteString (ByteString)
@@ -26,6 +26,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Store.TH (makeStore)
 import qualified Data.Store as Store
+import Data.Traversable (for)
 import System.Random
 
 data CcmConfig
@@ -172,12 +173,28 @@ peerRequest i1 i2 = ccmPeerRequests . at (i1,i2)
 openRequests :: SimpleGetter CcmState (Set (NodeId, NodeId))
 openRequests = to $ \s -> Map.keysSet (s ^. ccmPeerRequests)
 
+-- openFrame :: (Monad m) => NodeId -> CcmT m Bool
+-- openFrame
+
 openFrames :: (Monad m) => CcmT m (Map NodeId SeqNum)
 openFrames = do
   self <- getSelf
+  peers <- getPeers
+  frames <- for (Set.toList peers) $ \i -> do
+    sn <- use $ peerFrame i
+    return (i, sn)
   snNext <- nextNum self <$> use inputClock
-  frames <- use ccmPeerFrames
-  return $ Map.filter (\s -> s < snNext) frames
+  return $ Map.filter (\sn -> sn < snNext) (Map.fromList frames)
+
+-- openFrames :: (Monad m) => CcmT m (Map NodeId SeqNum)
+-- openFrames = do
+--   self <- getSelf
+--   snNext <- nextNum self <$> use inputClock
+--   frames <- use ccmPeerFrames
+--   return $ Map.filter (\s -> s < snNext) frames
+--   -- if null frames && snNext > 0
+--   --   then return True
+--   --   else return $ Map.filter (\s -> s < snNext) frames
 
 {- | Access a post by 'NodeId' and 'SeqNum'.  This will throw an error
    if the post has been garbage-collected or has not yet been
@@ -214,6 +231,10 @@ tryRecv = do
   -- Pull messages from receiver queue, and decode them.  Decoding
   -- errors produce a log message ("error"), and then are skipped.
   msgs <- tryReadMsgs
+  for_ msgs $ \m ->
+    dlog ["ccm","comm"] $
+      "Received message: "
+      ++ show m
   -- Then handle each message in turn, collecting any causal-ordered
   -- posts that can be delivered to the application.
   for_ msgs (uncurry handleCcmMsg)
@@ -323,10 +344,10 @@ sendMsgMode i m = do
       if result
         then actuallySendMsg i m
         else do
-          dlog ["ccm","comm"] $ "Send \"failed\" due to TMLossy mode"
+          dlog ["ccm","comm"] $ "\"Failed\" to send, TMLossy mode"
           return ()
     TMSubNetwork (SendTo s) | not $ Set.member i s -> do
-      dlog ["ccm","comm"] $ "Send \"failed\" due to TMSubNetwork mode"
+      dlog ["ccm","comm"] $ "\"Failed\" to send, TMSubNetwork mode"
       return ()
     _ -> actuallySendMsg i m
 
@@ -354,6 +375,10 @@ exchange :: (MonadLog m, MonadIO m) => CcmT m (Seq (NodeId, ByteString))
 exchange = do
   posts <- tryRecv
   sendLimit
+  fs <- use ccmPeerFrames
+  -- dlog ["ccm","comm"] $
+  --   "Post-exchange peerFrames: "
+  --   ++ show fs
   return posts
 
 messagesToRecv :: (MonadLog m, MonadIO m) => CcmT m (STM Bool)
@@ -367,7 +392,17 @@ messagesToSend = do
   fsEmpty <- null <$> openFrames
   -- Are the requests empty?
   rsEmpty <- null <$> use openRequests
-  return $ not (fsEmpty && rsEmpty)
+  let r = not fsEmpty || not rsEmpty
+  -- when (not r) $ do
+  --   self <- getSelf
+  --   next <- nextNum self <$> use inputClock
+  --   frames <- use ccmPeerFrames
+  --   dlog ["ccm","comm"] $
+  --     "No messages to send from "
+  --     ++ show next
+  --     ++ " and "
+  --     ++ show frames
+  return r
 
 {- | 'STM' test that returns 'True' if there there is material to
    exchange (send or receive) with peers.

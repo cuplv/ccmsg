@@ -13,9 +13,14 @@ module Network.Ccm.Types
   , snInf
   , PostCount
   , SendTarget (..)
-  , TransmissionMode (..)
+  , TransmissionConfig
+  , defaultTransmissionConfig
+  , tmLossy
+  , tmLinks
   , CacheMode (..)
   ) where
+
+import Network.Ccm.Lens
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.STM
@@ -53,17 +58,29 @@ data SendTarget
   | SendAll
   deriving (Show,Eq,Ord)
 
-data TransmissionMode
-  = TMLossy Double
-    -- ^ Successfully send messages according to the given probability
-    -- (between @0@ and @1@).  For example, @'TMLossy' 0.75@ means
-    -- that each message has a @3/4@ chance of being successfully
-    -- sent, and a @1/4@ chance of being "dropped" (not sent).
-  | TMNormal
-    -- ^ Attempt to send all messages.
-  | TMSubNetwork SendTarget
-    -- ^ Only attempt to send messages to peers designated by the
-    -- given 'SendTarget', simulating broken links to the other peers.
+data TransmissionConfig
+  = TransmissionConfig
+    { _tmLossy :: Maybe Double
+    , _tmLinks :: Maybe SendTarget
+    }
+  deriving (Show,Eq,Ord)
+
+makeLenses ''TransmissionConfig
+
+defaultTransmissionConfig :: TransmissionConfig
+defaultTransmissionConfig = TransmissionConfig Nothing Nothing
+
+-- data TransmissionMode
+--   = TMLossy Double
+--     -- ^ Successfully send messages according to the given probability
+--     -- (between @0@ and @1@).  For example, @'TMLossy' 0.75@ means
+--     -- that each message has a @3/4@ chance of being successfully
+--     -- sent, and a @1/4@ chance of being "dropped" (not sent).
+--   | TMNormal
+--     -- ^ Attempt to send all messages.
+--   | TMSubNetwork SendTarget
+--     -- ^ Only attempt to send messages to peers designated by the
+--     -- given 'SendTarget', simulating broken links to the other peers.
 
 data CacheMode
   = CacheNone -- ^ Do not cache messages, disabling retransmission

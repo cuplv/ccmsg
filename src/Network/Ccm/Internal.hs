@@ -115,7 +115,7 @@ data CcmState
     , _ccmPeerRequests :: Map (NodeId, NodeId) (SeqNum, SeqNum)
       -- ^ @(i1,i2) -> (sn1,sn2)@ means that we should send @i2@'s posts
       -- with sequence numbers starting at @sn1@ and ending at @sn2 - 1@.
-    , _transmissionMode :: TransmissionMode
+    , _transmissionConfig :: TransmissionConfig
     , _heartbeatTimerSwitch :: Switch
     }
 
@@ -131,7 +131,7 @@ newCcmState sw = CcmState
   , _ccmPeerClocks = Map.empty
   , _ccmPeerFrames = Map.empty
   , _ccmPeerRequests = Map.empty
-  , _transmissionMode = TMNormal
+  , _transmissionConfig = defaultTransmissionConfig
   , _heartbeatTimerSwitch = sw
   }
 
@@ -357,22 +357,39 @@ sendMsgMode i m = do
     ++ show i
     ++ " msg "
     ++ show m
-  tmode <- use transmissionMode
-  case tmode of
-    TMLossy d -> do
-      -- Randomness based on @d@ as a probability... take a random
-      -- 'Double' on the interval [0,1], and send the message if it
-      -- matches or falls below @d@.
-      result <- (<= d) <$> randomRIO (0,1)
-      if result
-        then actuallySendMsg i m
-        else do
-          dlog ["ccm","comm"] $ "\"Failed\" to send, TMLossy mode"
-          return ()
-    TMSubNetwork (SendTo s) | not $ Set.member i s -> do
-      dlog ["ccm","comm"] $ "\"Failed\" to send, TMSubNetwork mode"
-      return ()
-    _ -> actuallySendMsg i m
+  -- tmode <- use transmissionMode
+  -- case tmode of
+  --   TMLossy d -> do
+  --     -- Randomness based on @d@ as a probability... take a random
+  --     -- 'Double' on the interval [0,1], and send the message if it
+  --     -- matches or falls below @d@.
+  --     result <- (<= d) <$> randomRIO (0,1)
+  --     if result
+  --       then actuallySendMsg i m
+  --       else do
+  --         dlog ["ccm","comm"] $ "\"Failed\" to send, TMLossy mode"
+  --         return ()
+  --   TMSubNetwork (SendTo s) | not $ Set.member i s -> do
+  --     dlog ["ccm","comm"] $ "\"Failed\" to send, TMSubNetwork mode"
+  --     return ()
+  --   _ -> actuallySendMsg i m
+  tmc <- use transmissionConfig
+  case tmc^.tmLinks of
+    Just (SendTo s) | not $ Set.member i s ->
+      dlog ["ccm","comm"] $ "Simulated transmission failure: link disabled"
+    _ -> case tmc^.tmLossy of
+      Just d -> do
+        -- Randomness based on @d@ as a probability... take a random
+        -- 'Double' on the interval [0,1], and send the message if it
+        -- matches or falls below @d@.
+        result <- (<= d) <$> randomRIO (0,1)
+        if result
+          then
+            actuallySendMsg i m
+          else
+            dlog ["ccm","comm"] $ "Simulated transmission failure: random drop"
+      Nothing ->
+        actuallySendMsg i m
 
 actuallySendMsg :: (MonadLog m, MonadIO m) => NodeId -> CcmMsg -> CcmT m ()
 actuallySendMsg i m = do
@@ -551,8 +568,8 @@ allPeersUpToDate = do
       return $ and rs
     Nothing -> return True
 
-setTransmissionMode :: (Monad m) => TransmissionMode -> CcmT m ()
-setTransmissionMode t = transmissionMode .= t
+setTransmissionConfig :: (Monad m) => TransmissionConfig -> CcmT m ()
+setTransmissionConfig t = transmissionConfig .= t
 
 getOutputPostClock :: (Monad m) => CcmT m VClock
 getOutputPostClock = use $ sortState . Sort.getOutputClock

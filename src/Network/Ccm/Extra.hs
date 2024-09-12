@@ -5,8 +5,11 @@ module Network.Ccm.Extra
   , sendAll
   , messagesToSend
   , allPeersReady
-  , TransmissionMode (..)
-  , setTransmissionMode
+  , TransmissionConfig
+  , defaultTransmissionConfig
+  , tmLossy
+  , tmLinks
+  , setTransmissionConfig
   , getOutputPostClock
   ) where
 

@@ -116,7 +116,12 @@ nodeScript = do
   sto <- use $ stConf . cExpr . cSetupTimeout
   sendChance <- use $ stConf . cExpr . cSendChance
   case sendChance of
-    Just d -> lift $ Extra.setTransmissionMode (Extra.TMLossy d)
+    Just d -> do
+      let
+        tmc =
+          Extra.defaultTransmissionConfig
+          & Extra.tmLossy .~ Just d
+      lift $ Extra.setTransmissionConfig tmc
     Nothing -> return ()
   testReady <- lift Extra.allPeersReady
   result <- case sto of

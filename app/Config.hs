@@ -18,6 +18,7 @@ data ExConfig
     , _cSetupTimeout :: Maybe Int
     , _cRecvTimeout :: Maybe Int
     , _cSendChance :: Maybe Double
+    , _cMissingLinks :: Bool
     }
 
 makeLenses ''ExConfig
@@ -50,6 +51,7 @@ exConfigD = Dhall.record $ ExConfig
   <*> Dhall.field "setupTimeout" (Dhall.maybe (fromIntegral <$> Dhall.natural))
   <*> Dhall.field "recvTimeout" (Dhall.maybe (fromIntegral <$> Dhall.natural))
   <*> Dhall.field "sendChance" (Dhall.maybe Dhall.double)
+  <*> Dhall.field "missingLinks" Dhall.bool
 
 nodeConfigD :: Dhall.Decoder NodeConfig
 nodeConfigD = Dhall.record $ NodeConfig

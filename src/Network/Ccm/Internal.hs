@@ -159,11 +159,6 @@ postRange i sn mpc = to $ \s ->
     Just pc -> Seq.take (fromIntegral pc) appendix
     Nothing -> appendix
 
--- received :: NodeId -> SimpleGetter CcmState PostCount
--- received i = to $ \s ->
---   let (count,posts) = s ^. postHistory i
---   in count + fromIntegral (Seq.length posts)
-
 storedPostRange :: NodeId -> SimpleGetter CcmState (SeqNum, PostCount)
 storedPostRange i = to $ \s ->
   let (count,posts) = s ^. postHistory i
@@ -183,28 +178,19 @@ peerRequest i1 i2 = ccmPeerRequests . at (i1,i2)
 openRequests :: SimpleGetter CcmState (Set (NodeId, NodeId))
 openRequests = to $ \s -> Map.keysSet (s ^. ccmPeerRequests)
 
--- openFrame :: (Monad m) => NodeId -> CcmT m Bool
--- openFrame
+getSelfNext :: (Monad m) => CcmT m SeqNum
+getSelfNext = do
+  self <- getSelf
+  nextNum self <$> use inputClock
 
 openFrames :: (Monad m) => CcmT m (Map NodeId SeqNum)
 openFrames = do
-  self <- getSelf
   peers <- getPeers
   frames <- for (Set.toList peers) $ \i -> do
     sn <- use $ peerFrame i
     return (i, sn)
-  snNext <- nextNum self <$> use inputClock
+  snNext <- getSelfNext
   return $ Map.filter (\sn -> sn < snNext) (Map.fromList frames)
-
--- openFrames :: (Monad m) => CcmT m (Map NodeId SeqNum)
--- openFrames = do
---   self <- getSelf
---   snNext <- nextNum self <$> use inputClock
---   frames <- use ccmPeerFrames
---   return $ Map.filter (\s -> s < snNext) frames
---   -- if null frames && snNext > 0
---   --   then return True
---   --   else return $ Map.filter (\s -> s < snNext) frames
 
 {- | Access a post by 'NodeId' and 'SeqNum'.  This will throw an error
    if the post has been garbage-collected or has not yet been
@@ -290,6 +276,7 @@ handleCcmMsg sender = \case
         -- Deliver into store
         postHistory creator . _2 %= (Seq.|> p)
         -- Input into sorter
+        inputClock %= tick creator
         output <- lift $ zoom sortState (Sort.sortRemote creator (p^.postDeps))
         -- Each output is a NodeId referring to the next un-output
         -- post in the post store.
@@ -336,7 +323,7 @@ sendLimit' mpc = do
   -- Send messages for each frame that is not maxed out.
   for_ peers $ \i -> do
     snF <- use $ peerFrame i
-    snNext <- nextNum self <$> use inputClock
+    snNext <- getSelfNext
     if snF < snNext
       then do
         posts <- use $ postRange self snF mpc
@@ -357,22 +344,6 @@ sendMsgMode i m = do
     ++ show i
     ++ " msg "
     ++ show m
-  -- tmode <- use transmissionMode
-  -- case tmode of
-  --   TMLossy d -> do
-  --     -- Randomness based on @d@ as a probability... take a random
-  --     -- 'Double' on the interval [0,1], and send the message if it
-  --     -- matches or falls below @d@.
-  --     result <- (<= d) <$> randomRIO (0,1)
-  --     if result
-  --       then actuallySendMsg i m
-  --       else do
-  --         dlog ["ccm","comm"] $ "\"Failed\" to send, TMLossy mode"
-  --         return ()
-  --   TMSubNetwork (SendTo s) | not $ Set.member i s -> do
-  --     dlog ["ccm","comm"] $ "\"Failed\" to send, TMSubNetwork mode"
-  --     return ()
-  --   _ -> actuallySendMsg i m
   tmc <- use transmissionConfig
   case tmc^.tmLinks of
     Just (SendTo s) | not $ Set.member i s ->
@@ -439,9 +410,6 @@ exchange (Exchange tasks) = do
   posts <- tryRecv
   sendLimit
   fs <- use ccmPeerFrames
-  -- dlog ["ccm","comm"] $
-  --   "Post-exchange peerFrames: "
-  --   ++ show fs
   return posts
 
 messagesToRecv :: (MonadLog m, MonadIO m) => CcmT m (STM Bool)
@@ -456,15 +424,6 @@ messagesToSend = do
   -- Are the requests empty?
   rsEmpty <- null <$> use openRequests
   let r = not fsEmpty || not rsEmpty
-  -- when (not r) $ do
-  --   self <- getSelf
-  --   next <- nextNum self <$> use inputClock
-  --   frames <- use ccmPeerFrames
-  --   dlog ["ccm","comm"] $
-  --     "No messages to send from "
-  --     ++ show next
-  --     ++ " and "
-  --     ++ show frames
   return r
 
 {- | 'STM' action that blocks until there is material to exchange (send
@@ -568,8 +527,11 @@ allPeersUpToDate = do
       return $ and rs
     Nothing -> return True
 
-setTransmissionConfig :: (Monad m) => TransmissionConfig -> CcmT m ()
-setTransmissionConfig t = transmissionConfig .= t
-
 getOutputPostClock :: (Monad m) => CcmT m VClock
 getOutputPostClock = use $ sortState . Sort.getOutputClock
+
+getInputPostClock :: (Monad m) => CcmT m VClock
+getInputPostClock = use $ inputClock
+
+getKnownPostClock :: (Monad m) => CcmT m VClock
+getKnownPostClock = use $ knownClock

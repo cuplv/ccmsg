@@ -5,12 +5,15 @@ module Network.Ccm.Extra
   , sendAll
   , messagesToSend
   , allPeersReady
+  , SendTarget (..)
   , TransmissionConfig
   , defaultTransmissionConfig
   , tmLossy
   , tmLinks
-  , setTransmissionConfig
+  , transmissionConfig
   , getOutputPostClock
+  , getInputPostClock
+  , getKnownPostClock
   ) where
 
 import Network.Ccm.Internal

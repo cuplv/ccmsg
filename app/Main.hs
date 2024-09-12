@@ -115,14 +115,20 @@ nodeScript :: ExM (NominalDiffTime)
 nodeScript = do
   sto <- use $ stConf . cExpr . cSetupTimeout
   sendChance <- use $ stConf . cExpr . cSendChance
-  case sendChance of
-    Just d -> do
-      let
-        tmc =
-          Extra.defaultTransmissionConfig
-          & Extra.tmLossy .~ Just d
-      lift $ Extra.setTransmissionConfig tmc
-    Nothing -> return ()
+  lift $ Extra.transmissionConfig . Extra.tmLossy .= sendChance
+  cmissing <- use $ stConf . cExpr . cMissingLinks
+  target <- missingLinkTarget
+  if cmissing
+    then lift $ Extra.transmissionConfig . Extra.tmLinks .= Just target
+    else return ()
+  -- case sendChance of
+  --   Just d -> do
+  --     let
+  --       tmc =
+  --         Extra.defaultTransmissionConfig
+  --         & Extra.tmLossy .~ Just d
+  --     lift $ Extra.setTransmissionConfig tmc
+  --   Nothing -> return ()
   testReady <- lift Extra.allPeersReady
   result <- case sto of
     Just ms -> atomicallyTimed (ms * 1000) (check =<< testReady)
@@ -209,8 +215,15 @@ nodeLoop psw = untilJust $ do
   -- statusTime <- liftIO.atomically $ tryTakeTMVar statusTask
   statusTime <- liftIO.atomically $ tryFlipSwitch psw
   when statusTime $ do
+    dlog ["progress"] $ "---"
     recvd <- use stReceived
     dlog ["progress"] $ show recvd
+    oc <- lift Extra.getOutputPostClock
+    dlog ["progress"] $ "Output: " ++ show oc
+    ic <- lift Extra.getInputPostClock
+    dlog ["progress"] $ "Input: " ++ show ic
+    kc <- lift Extra.getKnownPostClock
+    dlog ["progress"] $ "Known: " ++ show kc
 
   continue <- not <$> checkAllDone
   if continue
@@ -229,3 +242,12 @@ accPosts ((creator,n) Seq.:<| ms) = do
     Just n' | n' > n -> Just n'
     _ -> Just n
   accPosts ms
+
+missingLinkTarget :: ExM Extra.SendTarget
+missingLinkTarget = do
+  Ccm.NodeId selfNum <- lift Ccm.getSelf
+  peers <- lift Ccm.getPeers
+  let
+    n = fromIntegral $ Set.size peers
+    missing = Ccm.NodeId $ (selfNum + 1) `mod` (n + 1)
+  return $ Extra.SendTo (Set.delete missing $ peers)

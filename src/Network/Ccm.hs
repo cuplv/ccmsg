@@ -12,7 +12,7 @@ module Network.Ccm
   , cccPersistMode
   , CacheMode (..)
   , PostCount
-  , NodeId
+  , NodeId (..)
   , nodeId
   , MyAddr (..)
   , getSelf

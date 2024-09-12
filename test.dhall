@@ -1,7 +1,7 @@
 \(nodeId : Natural) ->
 
 { nodeId
-, debugLog = ["progress","backup","post","exchange","ccm::comm"]
+, debugLog = ["progress","uptodate","post"]
 , experiment =
   { msgCount = 1000
   , recvTimeout = Some 5000

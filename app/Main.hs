@@ -60,6 +60,8 @@ main = do
     dlog ["trace"] $ "Running " ++ show (conf ^. cNodeId)
     runExM nodeScript conf
     return ()
+  -- Give debuglog messages a chance to print
+  threadDelay 500000
 
 showResultSeconds :: NominalDiffTime -> String
 showResultSeconds = formatTime defaultTimeLocale "%3Ess"
@@ -139,12 +141,23 @@ nodeScript = do
       t1 <- liftIO $ getCurrentTime
       let td = diffUTCTime t1 t0
       liftIO.putStrLn $ "Finished in " ++ showResultSeconds td
-      -- Keep exchanging so everyone can finish
-      forever $ do
+
+      -- Keep exchanging until everyone has finished.
+      untilJust $ do
         getExchange <- lift $ Ccm.awaitExchange
         e <- liftIO.atomically $ getExchange
         dlog ["exchange"] $ "Post-completion exchange: " ++ show e
         lift $ Ccm.exchange e
+        done <- lift Ccm.allPeersUpToDate
+        if done
+          then return $ Just ()
+          else return Nothing
+
+      -- Exchange for 100ms more so that everyone knows that everyone
+      -- is finished.
+      loopForMicros 10000 (lift Ccm.awaitExchange) $ \e -> do
+        lift $ Ccm.exchange e
+        return ()
 
       return td
 
@@ -164,7 +177,7 @@ checkAllDone = do
   if not allReceived
     then dlog ["trace"] $ "Not done."
     else dlog ["trace"] $ "Done."
-  return $ allReceived
+  return $ allReceived && next >= total
 
 nodeLoop :: TMVar () -> TMVar () -> ExM ()
 nodeLoop statusTask statusDone = untilJust $ do
@@ -175,13 +188,15 @@ nodeLoop statusTask statusDone = untilJust $ do
   -- Publish if we have not hit limit
   when (next < total) $ do
     lift $ Ccm.publish (Store.encode next)
+    oc <- lift Extra.getOutputPostClock
+    dlog ["post"] $
+      "Published post "
+      ++ show next
+      ++ ", clock is now "
+      ++ show oc
     stNextSend += 1
 
   -- Exchange for 10ms
-  -- let
-  --   testReady = do
-  --     test <- lift $ Ccm.readyForExchange
-  --     return (check =<< test)
   loopForMicros 10000 (lift Ccm.awaitExchange) $ \e -> do
     newPosts <- lift $ Ccm.exchange e
     -- Decode and record receipt of posts

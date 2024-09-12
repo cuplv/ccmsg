@@ -276,7 +276,14 @@ handleCcmMsg sender = \case
   PostMsg p -> do
     -- The sender might be the original creator of the post, or the
     -- sender might be retransmitting it.
-    let creator = p^.postCreator
+    let
+      creator = p^.postCreator
+      creatorClock = tick creator (p^.postDeps)
+
+    -- Update knowledge of existence of posts
+    peerClock creator %= joinVC creatorClock
+    knownClock %= joinVC creatorClock
+
     pc <- use $ received creator
     if
       | p^.seqNum == pc -> do
@@ -315,6 +322,12 @@ handleCcmMsg sender = \case
       else return ()
   Heartbeat c -> do
     peerClock sender %= joinVC c
+    knownClock %= joinVC c
+    rc <- use $ received sender
+    let next = nextNum sender c
+    if next > rc
+      then sendMsgMode sender (Backup rc)
+      else return ()
 
 sendLimit' :: (MonadLog m, MonadIO m) => Maybe PostCount -> CcmT m ()
 sendLimit' mpc = do
@@ -523,5 +536,23 @@ allPeersReady = do
   bsm <- view _2
   return (allReady bsm)
 
+{- | Returns true when all peers have reported receiving (and causally
+   outputting) all posts from the local node. -}
+allPeersUpToDate :: (MonadLog m, MonadIO m) => CcmT m Bool
+allPeersUpToDate = do
+  self <- getSelf
+  ps <- Set.toList <$> getPeers
+  oc <- use (sortState . Sort.getOutputClock)
+  case lookupVC self oc of
+    Just sn -> do
+      rs <- for ps $ \i -> do
+        iClock <- use $ peerClock i
+        return $ hasSeen self sn iClock
+      return $ and rs
+    Nothing -> return True
+
 setTransmissionMode :: (Monad m) => TransmissionMode -> CcmT m ()
 setTransmissionMode t = transmissionMode .= t
+
+getOutputPostClock :: (Monad m) => CcmT m VClock
+getOutputPostClock = use $ sortState . Sort.getOutputClock

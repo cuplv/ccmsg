@@ -7,6 +7,7 @@ module Network.Ccm.Extra
   , allPeersReady
   , TransmissionMode (..)
   , setTransmissionMode
+  , getOutputPostClock
   ) where
 
 import Network.Ccm.Internal

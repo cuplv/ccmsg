@@ -17,8 +17,10 @@ module Network.Ccm
   , MyAddr (..)
   , getSelf
   , getPeers
+  , Exchange
+  , eRecvSend
   , exchange
-  , readyForExchange
+  , awaitExchange
   , publish
   ) where
 

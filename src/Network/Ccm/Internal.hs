@@ -9,9 +9,11 @@ import Control.Monad.DebugLog
 import Network.Ccm.Bsm
 import Network.Ccm.Lens
 import qualified Network.Ccm.Sort as Sort
+import Network.Ccm.Switch
 import Network.Ccm.Types
 import Network.Ccm.VClock
 
+import Control.Concurrent (killThread)
 import Control.Concurrent.STM
 import Control.Monad (foldM,when)
 import Control.Monad.Reader
@@ -34,6 +36,7 @@ data CcmConfig
     { _cccTransmissionBatch :: PostCount
     , _cccCacheMode :: CacheMode
     , _cccPersistMode :: Bool
+    , _cccHeartbeatMicros :: Int
     }
   deriving (Show,Eq,Ord)
 
@@ -44,7 +47,12 @@ defaultCcmConfig = CcmConfig
   { _cccTransmissionBatch = 10
   , _cccCacheMode = CacheTemp
   , _cccPersistMode = True
+  , _cccHeartbeatMicros = defaultHeartbeatMicros
   }
+
+{-| By default, a heartbeat message is sent every 10ms. -}
+defaultHeartbeatMicros :: Int
+defaultHeartbeatMicros = 10000
 
 -- | A causal messaging post
 data Post
@@ -78,9 +86,9 @@ data CcmMsg
     -- ^ Sender wants the receiver to send a one-time sequence of all
     -- the messages it has seen from the given 'NodeId', starting with
     -- the given 'SeqNum'.
-  | HeartBeat VClock
-    -- ^ Notification that the sender has received the contents of the
-    -- given clock.
+  | Heartbeat VClock
+    -- ^ Notification that the sender has received (and output) the
+    -- contents of the given clock.
   deriving (Show,Eq,Ord)
 
 makeStore ''CcmMsg
@@ -99,7 +107,7 @@ data CcmState
       -- ^ The clock of posts that have been received or published locally.
     , _knownClock :: VClock
       -- ^ The input clock, plus all posts that have been referenced
-      -- in dependencies.
+      -- in dependencies and heartbeats.
     , _ccmPeerClocks :: Map NodeId VClock
       -- ^ The clocks reported as received (and output) by peers.
     , _ccmPeerFrames :: Map NodeId SeqNum
@@ -108,12 +116,13 @@ data CcmState
       -- ^ @(i1,i2) -> (sn1,sn2)@ means that we should send @i2@'s posts
       -- with sequence numbers starting at @sn1@ and ending at @sn2 - 1@.
     , _transmissionMode :: TransmissionMode
+    , _heartbeatTimerSwitch :: Switch
     }
 
 makeLenses ''CcmState
 
-newCcmState :: CcmState
-newCcmState = CcmState
+newCcmState :: Switch -> CcmState
+newCcmState sw = CcmState
   { _sortState = Sort.newState
   , _sortOutput = Seq.Empty
   , _ccmPostStore = Map.empty
@@ -123,6 +132,7 @@ newCcmState = CcmState
   , _ccmPeerFrames = Map.empty
   , _ccmPeerRequests = Map.empty
   , _transmissionMode = TMNormal
+  , _heartbeatTimerSwitch = sw
   }
 
 peerClock :: NodeId -> Lens' CcmState VClock
@@ -303,7 +313,7 @@ handleCcmMsg sender = \case
     if start <= sn && sn < (start + length)
       then peerRequest sender i .= Just (sn, start + length)
       else return ()
-  HeartBeat c -> do
+  Heartbeat c -> do
     peerClock sender %= joinVC c
 
 sendLimit' :: (MonadLog m, MonadIO m) => Maybe PostCount -> CcmT m ()
@@ -367,12 +377,35 @@ sendLimit = do
 sendAll :: (MonadLog m, MonadIO m) => CcmT m ()
 sendAll = sendLimit' Nothing
 
+sendHeartbeat :: (MonadLog m, MonadIO m) => CcmT m ()
+sendHeartbeat = do
+  oc <- use $ sortState . Sort.getOutputClock
+  dlog ["heartbeat"] $ "Sending heartbeat " ++ show oc
+  let m = Heartbeat oc
+  peers <- getPeers
+  for_ peers $ \i -> sendMsgMode i m
+
+data ETask
+  = ESendHeartbeat
+  deriving (Show,Eq,Ord)
+
+data Exchange
+  = Exchange [ETask]
+  deriving (Show,Eq,Ord)
+
+{- | The minimal exchange command, which will receive and send any ready
+   messages. -}
+eRecvSend :: Exchange
+eRecvSend = Exchange []
+
 {- | Communicate with peers.
 
    This will handle any messages that have been received, and will
    send any waiting messages (up to the transmission batch limit). -}
-exchange :: (MonadLog m, MonadIO m) => CcmT m (Seq (NodeId, ByteString))
-exchange = do
+exchange :: (MonadLog m, MonadIO m) => Exchange -> CcmT m (Seq (NodeId, ByteString))
+exchange (Exchange tasks) = do
+  for_ tasks $ \t -> case t of
+    ESendHeartbeat -> sendHeartbeat
   posts <- tryRecv
   sendLimit
   fs <- use ccmPeerFrames
@@ -404,16 +437,38 @@ messagesToSend = do
   --     ++ show frames
   return r
 
-{- | 'STM' test that returns 'True' if there there is material to
-   exchange (send or receive) with peers.
+{- | 'STM' action that blocks until there is material to exchange (send
+   or receive) with peers.
 
-   This will always be 'True' immediately after using 'publish'.
+   This will always return immediately, without retrying, the first
+   time it is called after 'publish'.
 -}
-readyForExchange :: (MonadLog m, MonadIO m) => CcmT m (STM Bool)
-readyForExchange = do
+awaitExchange :: (MonadLog m, MonadIO m) => CcmT m (STM Exchange)
+awaitExchange = do
+  sw <- use heartbeatTimerSwitch
   r <- messagesToRecv
   s <- messagesToSend
-  return $ (||) <$> r <*> pure s
+  let
+    -- Check whether a heartbeat message should be sent.
+    hAction = do
+      -- The 'take' will block until the heartbeat timer expires.
+      takeSwitch sw
+      -- The 'pass' will immediately restart the heartbeat timer.
+      passSwitch sw
+      -- Record that a heartbeat message should be sent.
+      return $ Exchange [ESendHeartbeat]
+
+    -- Check whether messages are ready to receive.
+    rAction = do
+      isR <- r
+      check isR -- retries if 'False'
+      return (Exchange [])
+
+    -- Check whether messages are ready to send.
+    sAction = if s
+      then return (Exchange [])
+      else retry
+  return $ hAction `orElse` rAction `orElse` sAction
 
 {- | Publish a new causal-ordered post, which is dependent on all posts
    that meet one of the following criteria:
@@ -451,7 +506,11 @@ runCcm
   -> LogIO IO a
 runCcm config self addrs comp = do
   bsm <- runBsm self addrs
-  evalStateT (runReaderT comp (config,bsm)) newCcmState
+  (tid,sw) <- forkTimerSwitch (config^.cccHeartbeatMicros)
+  liftIO.atomically $ passSwitch sw
+  a <- evalStateT (runReaderT comp (config,bsm)) (newCcmState sw)
+  liftIO $ killThread tid
+  return a
 
 getSelf :: (Monad m) => CcmT m NodeId
 getSelf = getSelfId . snd <$> ask

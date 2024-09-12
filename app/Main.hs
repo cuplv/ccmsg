@@ -141,10 +141,10 @@ nodeScript = do
       liftIO.putStrLn $ "Finished in " ++ showResultSeconds td
       -- Keep exchanging so everyone can finish
       forever $ do
-        testReady <- lift $ Ccm.readyForExchange
-        liftIO.atomically $ check =<< testReady
-        dlog ["exchange"] $ "Post-completion exchange..."
-        lift Ccm.exchange
+        getExchange <- lift $ Ccm.awaitExchange
+        e <- liftIO.atomically $ getExchange
+        dlog ["exchange"] $ "Post-completion exchange: " ++ show e
+        lift $ Ccm.exchange e
 
       return td
 
@@ -178,12 +178,12 @@ nodeLoop statusTask statusDone = untilJust $ do
     stNextSend += 1
 
   -- Exchange for 10ms
-  let
-    testReady = do
-      test <- lift $ Ccm.readyForExchange
-      return (check =<< test)
-  loopForMicros 10000 testReady $ \_ -> do
-    newPosts <- lift Ccm.exchange
+  -- let
+  --   testReady = do
+  --     test <- lift $ Ccm.readyForExchange
+  --     return (check =<< test)
+  loopForMicros 10000 (lift Ccm.awaitExchange) $ \e -> do
+    newPosts <- lift $ Ccm.exchange e
     -- Decode and record receipt of posts
     accPosts (newPosts & each . _2 %~ Store.decodeEx)
 

@@ -72,6 +72,9 @@ data State
 
 makeLenses ''State
 
+getOutputClock :: SimpleGetter State VClock
+getOutputClock = to $ \s -> s^.outputClock
+
 {- | An initial empty state for the causal sorting machine. -}
 newState :: State
 newState = State
@@ -197,7 +200,3 @@ filterMSeq test s = do
       if result
         then (a Seq.:<|) <$> filterMSeq test s
         else filterMSeq test s
-
-{- | Get the current output clock. -}
-getOutputClock :: (Monad m) => SortT m VClock
-getOutputClock = use outputClock

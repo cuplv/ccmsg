@@ -22,7 +22,7 @@ module Control.Monad.DebugLog
 
 import Control.Monad.DebugLog.Selector
 
-import Control.Concurrent (forkIO,ThreadId)
+import Control.Concurrent (forkIO,ThreadId,killThread)
 import Control.Concurrent.STM
 import Control.Monad
 import Control.Monad.Except
@@ -125,15 +125,43 @@ runLogStdout (LogIO m) l =
 -- spawning a thread that will continually print them until the
 -- process terminates.  Essentially, this is a thread-safe version of
 -- 'runLogStdout'.
+--
+-- When the action terminates, the result will not be returned until
+-- all log messages have been printed and the printing thread has
+-- terminated.
 runLogStdoutC :: (MonadIO m) => LogIO m a -> Set Selector -> m a
 runLogStdoutC (LogIO m) l = do
   queue <- liftIO newTQueueIO
+  safeToKill <- liftIO $ newTMVarIO ()
+
   let
-    action s = atomically $ writeTQueue queue s
-  liftIO . forkIO . forever $ do
-    log <- atomically . readTQueue $ queue
-    putStrLn log
-  runReaderT m (LogEnv l action [])
+    dlogAction s = atomically $ writeTQueue queue s
+
+  tid <- liftIO . forkIO . forever $ do
+
+    logs <- atomically $ do
+      -- Wait until logs are available
+      check =<< (not <$> isEmptyTQueue queue)
+      -- Do not let parent kill thread during printing
+      takeTMVar safeToKill
+      flushTQueue queue
+    -- Print the logs
+    mapM putStrLn logs
+    -- Return persmission to kill thread
+    atomically $ putTMVar safeToKill ()
+
+  -- Run action to result
+  result <- runReaderT m (LogEnv l dlogAction [])
+
+  -- Wait for both an empty queue and safeToKill
+  liftIO.atomically $ do
+    check =<< isEmptyTQueue queue
+    takeTMVar safeToKill
+
+  -- Kill the printing thread
+  liftIO $ killThread tid
+
+  return result
 
 -- | Run a 'LogIO' that writes logs to a 'TQueue'.
 runLogTQueue :: LogIO m a -> Set Selector -> TQueue String -> m a

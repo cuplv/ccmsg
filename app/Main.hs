@@ -56,12 +56,11 @@ main = do
     -- dss = case parseDebugSelector (conf^.cDebugLog) of
     --   Right ds -> ds
     --   Left e -> error $ "Debug selector could not be parsed: " ++ show e
-  flip runLogStdoutC dss $ do
+  td <- flip runLogStdoutC dss $ do
     dlog ["trace"] $ "Running " ++ show (conf ^. cNodeId)
     runExM nodeScript conf
-    return ()
-  -- Give debuglog messages a chance to print
-  threadDelay 500000
+
+  liftIO.putStrLn $ "Finished in " ++ showResultSeconds td
 
 showResultSeconds :: NominalDiffTime -> String
 showResultSeconds = formatTime defaultTimeLocale "%3Ess"
@@ -140,7 +139,6 @@ nodeScript = do
       nodeLoop statusTask statusDone
       t1 <- liftIO $ getCurrentTime
       let td = diffUTCTime t1 t0
-      liftIO.putStrLn $ "Finished in " ++ showResultSeconds td
 
       -- Keep exchanging until everyone has finished.
       untilJust $ do

@@ -25,15 +25,15 @@ forkTimer micros = do
     atomically $ putTMVar v ()
   return (Timer v tid)
 
-{- | An 'STM' action that blocks until the timer expires. -}
+{- | An 'STM' action that blocks until the timer expires.  After the timer has expired, 'awaitTimer' and 'tryTimer' will return successfully repeatedly. -}
 awaitTimer :: Timer -> STM ()
-awaitTimer t = takeTMVar (timerVar t)
+awaitTimer t = readTMVar (timerVar t)
 
 {- | An 'STM' action that checks whether the timer has expired, without
    blocking. -}
 tryTimer :: Timer -> STM Bool
 tryTimer t = do
-  r <- tryTakeTMVar (timerVar t)
+  r <- tryReadTMVar (timerVar t)
   case r of
     Just () -> return True
     Nothing -> return False

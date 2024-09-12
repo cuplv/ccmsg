@@ -10,6 +10,7 @@ import Network.Ccm.Bsm
 import Network.Ccm.Lens
 import qualified Network.Ccm.Sort as Sort
 import Network.Ccm.Switch
+import Network.Ccm.Timer
 import Network.Ccm.Types
 import Network.Ccm.VClock
 
@@ -22,6 +23,7 @@ import Data.ByteString (ByteString)
 import Data.Foldable (for_)
 import Data.Map (Map)
 import qualified Data.Map as Map
+import Data.Maybe (catMaybes)
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import Data.Set (Set)
@@ -117,6 +119,7 @@ data CcmState
       -- with sequence numbers starting at @sn1@ and ending at @sn2 - 1@.
     , _transmissionConfig :: TransmissionConfig
     , _heartbeatTimerSwitch :: Switch
+    , _retransTimers :: Map NodeId (Timer, SeqNum)
     }
 
 makeLenses ''CcmState
@@ -133,6 +136,7 @@ newCcmState sw = CcmState
   , _ccmPeerRequests = Map.empty
   , _transmissionConfig = defaultTransmissionConfig
   , _heartbeatTimerSwitch = sw
+  , _retransTimers = Map.empty
   }
 
 peerClock :: NodeId -> Lens' CcmState VClock
@@ -362,6 +366,11 @@ sendMsgMode i m = do
       Nothing ->
         actuallySendMsg i m
 
+broadcastMode :: (MonadLog m, MonadIO m) => CcmMsg -> CcmT m ()
+broadcastMode m = do
+  peers <- getPeers
+  for_ peers $ \i -> sendMsgMode i m
+
 actuallySendMsg :: (MonadLog m, MonadIO m) => NodeId -> CcmMsg -> CcmT m ()
 actuallySendMsg i m = do
   bsm <- view $ _2
@@ -386,8 +395,15 @@ sendHeartbeat = do
   peers <- getPeers
   for_ peers $ \i -> sendMsgMode i m
 
+sendRetransmitRequest :: (MonadLog m, MonadIO m) => NodeId -> SeqNum -> CcmT m ()
+sendRetransmitRequest i sn = do
+  dlog ["retransmission"] $ "Sending retrans request: " ++ show (i,sn)
+  let m = Retrans i sn
+  broadcastMode $ Retrans i sn
+
 data ETask
-  = ESendHeartbeat
+  = EHeartbeat
+  | ERetransRequest
   deriving (Show,Eq,Ord)
 
 data Exchange
@@ -406,7 +422,8 @@ eRecvSend = Exchange []
 exchange :: (MonadLog m, MonadIO m) => Exchange -> CcmT m (Seq (NodeId, ByteString))
 exchange (Exchange tasks) = do
   for_ tasks $ \t -> case t of
-    ESendHeartbeat -> sendHeartbeat
+    EHeartbeat -> sendHeartbeat
+    ERetransRequest -> undefined
   posts <- tryRecv
   sendLimit
   fs <- use ccmPeerFrames
@@ -426,6 +443,31 @@ messagesToSend = do
   let r = not fsEmpty || not rsEmpty
   return r
 
+{- | Returns an 'STM' action that blocks until any timer expires, and
+   then returns that timer.  This does not remove the timer from the
+   'retransTimers' state. -}
+awaitTimers :: (MonadLog m, MonadIO m) => CcmT m (STM (NodeId, SeqNum))
+awaitTimers = do
+  ts <- use retransTimers
+  let
+    f [] = retry
+    f ((i,(a,sn)):as) = (awaitTimer a >> return (i,sn)) `orElse` f as
+  return $ f (Map.toList ts)
+
+{- | Check all existing timers, removing expired ones and returning
+   their details. -}
+collectTimers :: (MonadLog m, MonadIO m) => CcmT m [(NodeId, SeqNum)]
+collectTimers = do
+  ts <- use retransTimers
+  ms <- for (Map.toList ts) $ \(i,(t,sn)) -> do
+    result <- liftIO . atomically $ tryTimer t
+    if result
+      then do
+        retransTimers . at i .= Nothing
+        return (Just (i,sn))
+      else return Nothing
+  return $ catMaybes ms
+
 {- | 'STM' action that blocks until there is material to exchange (send
    or receive) with peers.
 
@@ -437,6 +479,7 @@ awaitExchange = do
   sw <- use heartbeatTimerSwitch
   r <- messagesToRecv
   s <- messagesToSend
+  ats <- awaitTimers
   let
     -- Check whether a heartbeat message should be sent.
     hAction = do
@@ -445,7 +488,11 @@ awaitExchange = do
       -- The 'pass' will immediately restart the heartbeat timer.
       passSwitch sw
       -- Record that a heartbeat message should be sent.
-      return $ Exchange [ESendHeartbeat]
+      return $ Exchange [EHeartbeat]
+
+    tAction = do
+      ats
+      return $ Exchange [ERetransRequest]
 
     -- Check whether messages are ready to receive.
     rAction = do

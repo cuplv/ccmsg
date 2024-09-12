@@ -27,6 +27,7 @@ library
                     , Network.Ccm.Extra
                     , Network.Ccm.Lens
                     , Network.Ccm.Switch
+                    , Network.Ccm.Timer
                     , Network.Framed
                     , Control.Monad.DebugLog
                     , Control.Monad.DebugLog.Selector

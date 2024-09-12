@@ -2,6 +2,7 @@ module Network.Ccm.Switch
   ( Switch
   , passSwitch
   , takeSwitch
+  , tryFlipSwitch
   , forkSwitch
   , forkRepeatSwitch
   , forkTimerSwitch
@@ -23,6 +24,18 @@ takeSwitch sw = takeTMVar (inputVar sw)
 
 passSwitch :: Switch -> STM ()
 passSwitch sw = putTMVar (outputVar sw) ()
+
+{- | Try to take the 'Switch', without blocking.  If successful,
+   immediately pass it again and return 'True'. -}
+tryFlipSwitch :: Switch -> STM Bool
+tryFlipSwitch sw = do
+  result <- tryTakeTMVar (inputVar sw)
+  case result of
+    Just () -> do
+      putTMVar (outputVar sw) ()
+      return True
+    Nothing ->
+      return False
 
 {- | Fork a thread that will use one end of the 'Switch' in an arbitrary
    way.

@@ -6,10 +6,10 @@ import State
 import Control.Monad.DebugLog
 import qualified Network.Ccm as Ccm
 import qualified Network.Ccm.Extra as Extra
--- import Network.Ccm.State (ccmStats,totalOutOfOrder)
 import Network.Ccm.Lens
+import Network.Ccm.Switch
 
-import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent (forkIO, threadDelay, killThread)
 import Control.Concurrent.STM
 import Control.Monad (filterM,when,forever)
 import Control.Monad.State
@@ -129,16 +129,17 @@ nodeScript = do
       self <- lift Ccm.getSelf
       dlog ["trace"] $ "Entering main loop"
 
-      statusTask <- liftIO newEmptyTMVarIO
-      statusDone <- liftIO newEmptyTMVarIO
-      liftIO.forkIO.forever $ do
-        atomically $ putTMVar statusTask ()
-        atomically $ takeTMVar statusDone
-        threadDelay progressLogInterval -- 1ms
+      -- Create progress log timer
+      (tid,psw) <- forkTimerSwitch progressLogInterval
+      -- Start progress log timer
+      liftIO.atomically $ passSwitch psw
 
-      nodeLoop statusTask statusDone
+      nodeLoop psw
       t1 <- liftIO $ getCurrentTime
       let td = diffUTCTime t1 t0
+
+      -- Kill progress log timer
+      liftIO $ killThread tid
 
       -- Keep exchanging until everyone has finished.
       untilJust $ do
@@ -177,8 +178,8 @@ checkAllDone = do
     else dlog ["trace"] $ "Done."
   return $ allReceived && next >= total
 
-nodeLoop :: TMVar () -> TMVar () -> ExM ()
-nodeLoop statusTask statusDone = untilJust $ do
+nodeLoop :: Switch -> ExM ()
+nodeLoop psw = untilJust $ do
   self <- lift Ccm.getSelf
   total <- use $ stConf.cExpr.cMsgCount
   next <- use stNextSend
@@ -200,14 +201,11 @@ nodeLoop statusTask statusDone = untilJust $ do
     -- Decode and record receipt of posts
     accPosts (newPosts & each . _2 %~ Store.decodeEx)
 
-  statusTime <- liftIO.atomically $ tryTakeTMVar statusTask
-  case statusTime of
-    Just () -> do
-      -- print status, replace flag
-      recvd <- use stReceived
-      dlog ["progress"] $ show recvd
-      liftIO.atomically $ putTMVar statusDone ()
-    Nothing -> return ()
+  -- statusTime <- liftIO.atomically $ tryTakeTMVar statusTask
+  statusTime <- liftIO.atomically $ tryFlipSwitch psw
+  when statusTime $ do
+    recvd <- use stReceived
+    dlog ["progress"] $ show recvd
 
   continue <- not <$> checkAllDone
   if continue

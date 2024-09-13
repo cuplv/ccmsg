@@ -175,9 +175,13 @@ storedPostRange i = to $ \s ->
   in (count, fromIntegral (Seq.length posts))
 
 received :: NodeId -> SimpleGetter CcmState PostCount
-received i = to $ \s ->
-  let (start,length) = s ^. storedPostRange i
-  in start + length
+-- -- This version might have been causing errors, even though it
+-- -- looks safe...
+--
+-- received i = to $ \s ->
+--   let (start,length) = s ^. storedPostRange i
+--   in start + length
+received i = to $ \s -> nextNum i (s^.inputClock)
 
 peerFrame :: NodeId -> Lens' CcmState SeqNum
 peerFrame i = ccmPeerFrames . at i . non 0
@@ -244,8 +248,13 @@ tryRecv = do
   -- Then handle each message in turn, collecting any causal-ordered
   -- posts that can be delivered to the application.
   for_ msgs (uncurry handleCcmMsg)
-  -- Update retrans timers according to new clock values
-  setRetrans
+
+  when (not $ null msgs) $ do
+    -- Update retrans timers according to new clock values
+    setRetrans
+    -- Drop any stored posts that are now garbage
+    collectGarbage
+
   -- Flush output buffer
   sortOutput <<.= Seq.Empty
 
@@ -423,11 +432,6 @@ sendHeartbeat = do
   peers <- getPeers
   for_ peers $ \i -> sendMsgMode i m
 
--- sendRetransmitRequest :: (MonadLog m, MonadIO m) => NodeId -> SeqNum -> CcmT m ()
--- sendRetransmitRequest i sn = do
---   dlog ["retransmission"] $ "Sending retrans request: " ++ show (i,sn)
---   broadcastMode $ Retrans i sn
-
 data ETask
   = EHeartbeat
   | ERetransRequest
@@ -511,7 +515,11 @@ collectTimers = do
       | iNext < sn ->
         error "collectTimers: inputClock went backwards?"
       | iNext > kNext ->
-        error "collectTimers: inputClock greater than knownClock?"
+        error $
+          "collectTimers: inputClock greater than knownClock? Input: "
+          ++ show ic
+          ++ ", Known: "
+          ++ show kc
 
       -- Don't do anything when timer is not done.
       | not done -> return Nothing
@@ -547,16 +555,6 @@ collectTimers = do
         return Nothing
   return $ catMaybes ms
 
-{- | Cancel any existing retrans timer for the given 'NodeId'. -}
-cancelRetrans :: (MonadLog m, MonadIO m) => NodeId -> CcmT m ()
-cancelRetrans i = do
-  r <- use $ retransTimers . at i
-  case r of
-    Just (t,_) -> do
-      cancelTimer t
-      retransTimers . at i .= Nothing
-    Nothing -> return ()
-
 {- | Set a new retrans timer for the given 'NodeId' and 'SeqNum', unless
    a timer is already set. -}
 startRetransReq :: (MonadLog m, MonadIO m) => NodeId -> SeqNum -> CcmT m ()
@@ -586,7 +584,7 @@ setRetrans = do
       iNext = nextNum i ic
     if kNext > iNext
       then startRetransReq i iNext
-      else return () -- cancelRetrans i
+      else return ()
 
 {- | 'STM' action that blocks until there is material to exchange (send
    or receive) with peers.
@@ -675,6 +673,12 @@ getSelf = getSelfId . snd <$> ask
 getPeers :: (Monad m) => CcmT m (Set NodeId)
 getPeers = getPeerIds . snd <$> ask
 
+getAllNodes :: (Monad m) => CcmT m (Set NodeId)
+getAllNodes = do
+  self <- getSelf
+  peers <- getPeers
+  return (Set.insert self peers)
+
 allPeersReady :: (MonadLog m, MonadIO m) => CcmT m (STM Bool)
 allPeersReady = do
   bsm <- view _2
@@ -703,3 +707,49 @@ getInputPostClock = use $ inputClock
 
 getKnownPostClock :: (Monad m) => CcmT m VClock
 getKnownPostClock = use $ knownClock
+
+commonClock :: (Monad m) => CcmT m VClock
+commonClock = do
+  -- pcs <- Map.elems <$> use ccmPeerClocks
+  peers <- Set.toList <$> getPeers
+  pcs <- for peers $ \i -> use (peerClock i)
+  oc <- use $ sortState . Sort.getOutputClock
+  let
+    -- The base case is the local outputClock
+    f [] = oc
+    f (c:cs) = c `meetVC` f cs
+  return $ f pcs
+
+{- | Drop posts from the store that every node has output. -}
+collectGarbage :: (MonadLog m) => CcmT m ()
+collectGarbage = do
+  all <- getAllNodes
+  mc <- commonClock
+  dlog ["garbage"] $
+    "Meet clock is "
+    ++ show mc
+  for_ all $ \i -> do
+    pc <- use $ postHistory i . _1
+    dlog ["garbage"] $
+      "So far we have dropped "
+      ++ show pc
+      ++ " posts from store for "
+      ++ show i
+    let
+      n = nextNum i mc
+      -- The number of posts we should drop is the number of posts
+      -- everyone has already seen, minus the number of posts we have
+      -- already dropped.
+      dn = n - pc
+    postHistory i . _2 %= Seq.drop (fromIntegral dn)
+    pc' <- postHistory i . _1 <%= (+ dn)
+    dlog ["garbage"] $
+      "Should have dropped "
+      ++ show dn
+      ++ " posts from store for "
+      ++ show i
+    -- dlog ["garbage"] $
+    --   "Store for "
+    --   ++ show i
+    --   ++ " now begins at "
+    --   ++ show pc'

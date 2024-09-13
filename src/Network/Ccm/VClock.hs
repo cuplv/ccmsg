@@ -12,6 +12,7 @@ module Network.Ccm.VClock
   , aggDiff
   , lookupVC
   , joinVC
+  , meetVC
   , leVC
   , leVC'
   , leNode

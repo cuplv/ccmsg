@@ -1,7 +1,7 @@
 \(nodeId : Natural) ->
 
 { nodeId
-, debugLog = ["progress"]
+, debugLog = ["progress","live"]
 , experiment =
   { msgCount = 100
   , recvTimeout = Some 5000

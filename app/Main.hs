@@ -200,7 +200,10 @@ nodeLoop psw = untilJust $ do
 
   -- Exchange for 10ms
   loopForMicros 10000 (lift Ccm.awaitExchange) $ \e -> do
-    newPosts <- lift $ Ccm.exchange e
+    (liveNodes,newPosts) <- lift (Ccm.exchange e)
+    dlog ["live"] $
+      "Saw new messages from "
+      ++ show liveNodes
     -- Decode and record receipt of posts
     accPosts (newPosts & each . _2 %~ Store.decodeEx)
 

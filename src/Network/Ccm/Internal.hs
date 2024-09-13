@@ -20,7 +20,7 @@ import Control.Monad (foldM,when)
 import Control.Monad.Reader
 import Control.Monad.State
 import Data.ByteString (ByteString)
-import Data.Foldable (for_)
+import Data.Foldable (for_,toList)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Maybe (catMaybes)
@@ -232,8 +232,11 @@ post i sn = to $ \s ->
 type CcmT m = ReaderT (CcmConfig, Bsm) (StateT CcmState m)
 
 {- | Receive any messages from the network, handle them, and return any
-   causal-ordered post contents. -}
-tryRecv :: (MonadLog m, MonadIO m) => CcmT m (Seq (NodeId, ByteString))
+   causal-ordered post contents, as well as a set of 'NodeId's that
+   were heard from, for liveness tracking. -}
+tryRecv
+  :: (MonadLog m, MonadIO m)
+  => CcmT m (Set NodeId, Seq (NodeId, ByteString))
 tryRecv = do
   -- The sortOutput buffer should be empty before and after this
   -- function.
@@ -256,7 +259,9 @@ tryRecv = do
     collectGarbage
 
   -- Flush output buffer
-  sortOutput <<.= Seq.Empty
+  outputPosts <- sortOutput <<.= Seq.Empty
+  let liveNodes = Set.fromList . toList . fmap fst $ msgs
+  return (liveNodes,outputPosts)
 
 tryReadMsgs :: (MonadLog m, MonadIO m) => CcmT m (Seq (NodeId, CcmMsg))
 tryReadMsgs = do
@@ -449,8 +454,12 @@ eRecvSend = Exchange []
 {- | Communicate with peers.
 
    This will handle any messages that have been received, and will
-   send any waiting messages (up to the transmission batch limit). -}
-exchange :: (MonadLog m, MonadIO m) => Exchange -> CcmT m (Seq (NodeId, ByteString))
+   send any waiting messages (up to the transmission batch limit).
+
+   The function returns a set of 'NodeId's that messages were received
+   from, and a sequence of posts that have been output in causal
+   order. -}
+exchange :: (MonadLog m, MonadIO m) => Exchange -> CcmT m (Set NodeId, Seq (NodeId, ByteString))
 exchange (Exchange tasks) = do
   for_ tasks $ \t -> case t of
     EHeartbeat -> sendHeartbeat

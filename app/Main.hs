@@ -51,11 +51,7 @@ main = do
     [] -> error "Called without config file argument"
     _ -> error "Called with more than one argument"
   conf <- inputConfig confFile
-  -- let ds = (fromRight (error "debug selector parse fail") . parseDebugSelector $ "trace") :: Selector
   dss <- Set.fromList <$> mapM pds (conf^.cDebugLog)
-    -- dss = case parseDebugSelector (conf^.cDebugLog) of
-    --   Right ds -> ds
-    --   Left e -> error $ "Debug selector could not be parsed: " ++ show e
   td <- flip runLogStdoutC dss $ do
     dlog ["trace"] $ "Running " ++ show (conf ^. cNodeId)
     runExM nodeScript conf
@@ -121,14 +117,6 @@ nodeScript = do
   if cmissing
     then lift $ Extra.transmissionConfig . Extra.tmLinks .= Just target
     else return ()
-  -- case sendChance of
-  --   Just d -> do
-  --     let
-  --       tmc =
-  --         Extra.defaultTransmissionConfig
-  --         & Extra.tmLossy .~ Just d
-  --     lift $ Extra.setTransmissionConfig tmc
-  --   Nothing -> return ()
   testReady <- lift Extra.allPeersReady
   result <- case sto of
     Just ms -> atomicallyTimed (ms * 1000) (check =<< testReady)
@@ -153,6 +141,7 @@ nodeScript = do
       liftIO $ killThread tid
 
       -- Keep exchanging until everyone has finished.
+      dlog ["progress"] $ "I am done."
       untilJust $ do
         getExchange <- lift $ Ccm.awaitExchange
         e <- liftIO.atomically $ getExchange
@@ -160,12 +149,15 @@ nodeScript = do
         lift $ Ccm.exchange e
         done <- lift Ccm.allPeersUpToDate
         if done
-          then return $ Just ()
+          then do
+            dlog ["progress"] $ "Everyone else is done."
+            return $ Just ()
           else return Nothing
 
-      -- Exchange for 100ms more so that everyone knows that everyone
+      -- Exchange for 2s more so that everyone knows that everyone
       -- is finished.
-      loopForMicros 10000 (lift Ccm.awaitExchange) $ \e -> do
+      let twoSec = 2000000
+      loopForMicros twoSec (lift Ccm.awaitExchange) $ \e -> do
         lift $ Ccm.exchange e
         return ()
 

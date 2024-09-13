@@ -39,6 +39,7 @@ data CcmConfig
     , _cccCacheMode :: CacheMode
     , _cccPersistMode :: Bool
     , _cccHeartbeatMicros :: Int
+    , _cccRetransMicros :: Int
     }
   deriving (Show,Eq,Ord)
 
@@ -50,11 +51,16 @@ defaultCcmConfig = CcmConfig
   , _cccCacheMode = CacheTemp
   , _cccPersistMode = True
   , _cccHeartbeatMicros = defaultHeartbeatMicros
+  , _cccRetransMicros = defaultRetransMicros
   }
 
 {-| By default, a heartbeat message is sent every 10ms. -}
 defaultHeartbeatMicros :: Int
 defaultHeartbeatMicros = 10000
+
+{-| By default, a retrans request is sent every 200ms. -}
+defaultRetransMicros :: Int
+defaultRetransMicros = 200000
 
 -- | A causal messaging post
 data Post
@@ -238,6 +244,8 @@ tryRecv = do
   -- Then handle each message in turn, collecting any causal-ordered
   -- posts that can be delivered to the application.
   for_ msgs (uncurry handleCcmMsg)
+  -- Update retrans timers according to new clock values
+  setRetrans
   -- Flush output buffer
   sortOutput <<.= Seq.Empty
 
@@ -281,7 +289,8 @@ handleCcmMsg sender = \case
         postHistory creator . _2 %= (Seq.|> p)
         -- Input into sorter
         inputClock %= tick creator
-        output <- lift $ zoom sortState (Sort.sortRemote creator (p^.postDeps))
+        output <- lift . zoom sortState $
+          Sort.sortRemote creator (p^.postDeps)
         -- Each output is a NodeId referring to the next un-output
         -- post in the post store.
         for_ output $ \(i,sn) -> do
@@ -338,8 +347,27 @@ sendLimit' mpc = do
       else
         return ()
   -- Send for each open retransmission request.
-  rs <- use openRequests
-  for_ rs $ \i -> undefined
+  rs <- use ccmPeerRequests
+  rs' <- flip Map.traverseMaybeWithKey rs $ \(i1,i2) (sn1,sn2) -> do
+    let
+      n = case mpc of
+        Just count -> min count (sn2 - sn1)
+        Nothing -> sn2 - sn1
+    posts <- use $ postRange i2 sn1 (Just n)
+    -- Send each post
+    for_ posts $ \p -> sendMsgMode i1 (PostMsg p)
+    -- Advance the request window
+    let sn1' = sn1 + fromIntegral (length posts)
+    dlog ["retrans"] $
+      "Sent "
+      ++ show (length posts)
+      ++ " retrans posts for "
+      ++ show (i1,i2,sn1)
+    -- If the window size is > 0, keep it
+    if sn1' < sn2
+      then return $ Just (sn1',sn2)
+      else return Nothing
+  ccmPeerRequests .= rs'
 
 sendMsgMode :: (MonadLog m, MonadIO m) => NodeId -> CcmMsg -> CcmT m ()
 sendMsgMode i m = do
@@ -395,11 +423,10 @@ sendHeartbeat = do
   peers <- getPeers
   for_ peers $ \i -> sendMsgMode i m
 
-sendRetransmitRequest :: (MonadLog m, MonadIO m) => NodeId -> SeqNum -> CcmT m ()
-sendRetransmitRequest i sn = do
-  dlog ["retransmission"] $ "Sending retrans request: " ++ show (i,sn)
-  let m = Retrans i sn
-  broadcastMode $ Retrans i sn
+-- sendRetransmitRequest :: (MonadLog m, MonadIO m) => NodeId -> SeqNum -> CcmT m ()
+-- sendRetransmitRequest i sn = do
+--   dlog ["retransmission"] $ "Sending retrans request: " ++ show (i,sn)
+--   broadcastMode $ Retrans i sn
 
 data ETask
   = EHeartbeat
@@ -423,7 +450,14 @@ exchange :: (MonadLog m, MonadIO m) => Exchange -> CcmT m (Seq (NodeId, ByteStri
 exchange (Exchange tasks) = do
   for_ tasks $ \t -> case t of
     EHeartbeat -> sendHeartbeat
-    ERetransRequest -> undefined
+    ERetransRequest -> do
+      reqs <- collectTimers
+      for_ reqs $ \(i,sn) -> do
+        dlog ["retrans"] $
+          "Sending retrans request: "
+          ++ show (i,sn)
+        broadcastMode $ Retrans i sn
+      
   posts <- tryRecv
   sendLimit
   fs <- use ccmPeerFrames
@@ -451,22 +485,108 @@ awaitTimers = do
   ts <- use retransTimers
   let
     f [] = retry
-    f ((i,(a,sn)):as) = (awaitTimer a >> return (i,sn)) `orElse` f as
+    f ((i,(a,sn)):as) =
+      (awaitTimer a >> return (i,sn)) `orElse` f as
   return $ f (Map.toList ts)
 
-{- | Check all existing timers, removing expired ones and returning
+newRetransTimer :: (MonadLog m, MonadIO m) => CcmT m Timer
+newRetransTimer = do
+  micros <- view $ _1 . cccRetransMicros
+  forkTimer micros
+
+{- | Check all existing timers, restarting expired ones and returning
    their details. -}
 collectTimers :: (MonadLog m, MonadIO m) => CcmT m [(NodeId, SeqNum)]
 collectTimers = do
   ts <- use retransTimers
+  kc <- use knownClock
+  ic <- use inputClock
   ms <- for (Map.toList ts) $ \(i,(t,sn)) -> do
-    result <- liftIO . atomically $ tryTimer t
-    if result
-      then do
-        retransTimers . at i .= Nothing
+    let
+      iNext = nextNum i ic
+      kNext = nextNum i kc
+    done <- liftIO . atomically $ tryTimer t
+    if
+      -- Error cases
+      | iNext < sn ->
+        error "collectTimers: inputClock went backwards?"
+      | iNext > kNext ->
+        error "collectTimers: inputClock greater than knownClock?"
+
+      -- Don't do anything when timer is not done.
+      | not done -> return Nothing
+
+      -- Three cases when timer is done:
+      --
+      -- 1. No progress since timer started, so we send a retrans
+      -- request message and restart the timer.
+      | done && iNext == sn -> do
+        dlog ["retrans"] $
+          "No progress, sending retrans and restarting timer for "
+          ++ show (i,sn)
+        t' <- newRetransTimer
+        retransTimers . at i .= Just (t',sn)
         return (Just (i,sn))
-      else return Nothing
+
+      -- 2. Some progress but not complete, so we restart the timer
+      -- and bump its SeqNum without sending a message.
+      | iNext > sn && iNext < kNext -> do
+        dlog ["retrans"] $
+          "Some progress, restarting timer for "
+          ++ show (i,iNext)
+        t' <- newRetransTimer
+        retransTimers . at i .= Just (t',iNext)
+        return Nothing
+
+      -- 3. Progress and complete, so we don't start a new timer.
+      | iNext == kNext -> do
+        dlog ["retrans"] $
+          "Up to date, removing timer for "
+          ++ show i
+        retransTimers . at i .= Nothing
+        return Nothing
   return $ catMaybes ms
+
+{- | Cancel any existing retrans timer for the given 'NodeId'. -}
+cancelRetrans :: (MonadLog m, MonadIO m) => NodeId -> CcmT m ()
+cancelRetrans i = do
+  r <- use $ retransTimers . at i
+  case r of
+    Just (t,_) -> do
+      cancelTimer t
+      retransTimers . at i .= Nothing
+    Nothing -> return ()
+
+{- | Set a new retrans timer for the given 'NodeId' and 'SeqNum', unless
+   a timer is already set. -}
+startRetransReq :: (MonadLog m, MonadIO m) => NodeId -> SeqNum -> CcmT m ()
+startRetransReq i sn2 = do
+  r <- use $ retransTimers . at i
+  let
+    setNew = do
+      t2 <- newRetransTimer
+      retransTimers . at i .= Just (t2,sn2)      
+  case r of
+    Nothing -> do
+      dlog ["retrans"] $
+        "Started a new retrans timer for " ++ show (i,sn2)
+      setNew
+    _ -> return ()
+
+{- | Set retrans timers as necessary, according to 'knownClock' and
+   'inputClock' -}
+setRetrans :: (MonadLog m, MonadIO m) => CcmT m ()
+setRetrans = do
+  peers <- getPeers
+  kc <- use knownClock
+  ic <- use inputClock
+  for_ peers $ \i -> do
+    let
+      kNext = nextNum i kc
+      iNext = nextNum i ic
+    if kNext > iNext
+      then startRetransReq i iNext
+      else return () -- cancelRetrans i
 
 {- | 'STM' action that blocks until there is material to exchange (send
    or receive) with peers.
@@ -490,6 +610,7 @@ awaitExchange = do
       -- Record that a heartbeat message should be sent.
       return $ Exchange [EHeartbeat]
 
+    -- Check whether any retrans timers have expired
     tAction = do
       ats
       return $ Exchange [ERetransRequest]
@@ -504,7 +625,7 @@ awaitExchange = do
     sAction = if s
       then return (Exchange [])
       else retry
-  return $ hAction `orElse` rAction `orElse` sAction
+  return $ rAction `orElse` sAction `orElse` tAction `orElse` hAction
 
 {- | Publish a new causal-ordered post, which is dependent on all posts
    that meet one of the following criteria:

@@ -1,12 +1,12 @@
 \(nodeId : Natural) ->
 
 { nodeId
-, debugLog = ["progress"]
+, debugLog = ["progress","retrans"]
 , experiment =
   { msgCount = 1000
   , recvTimeout = Some 5000
   , setupTimeout = Some 10000
-  , sendChance = Some 0.8
+  , sendChance = None Double
   , missingLinks = True
   , network =
       [ { id = 0, host = "127.0.0.1", port = "8050" }

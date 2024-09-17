@@ -98,7 +98,7 @@ runSender i outbox sock = do
         dlog ["debug"] $ "Sent " ++ show n ++ "b message to " ++ show i
   tryM <- passLogIO sendAction
   catchM <- passLogIOF $ \e ->
-    dlog ["error"] $ "runSender: Caught: " ++ show (e :: SomeException)
+    dlog ["connerror"] $ "runSender: Caught: " ++ show (e :: SomeException)
   liftIO $ catch tryM catchM
   -- catch sendAction $ \e ->
   --   -- debug d $ "[Send] Caught: " ++ show (e :: SomeException)
@@ -127,7 +127,7 @@ runClient delay bsm targetNode targetAddr = do
         Nothing -> error $ "runClient on non-existent peer: " ++ show targetNode
   tryM <- passLogIO $ runClient' bsm targetNode targetAddr peer
   catchM <- passLogIOF $ \e -> do
-    dlog ["error"] $
+    dlog ["connerror"] $
       "Connection error to "
       ++ show targetNode
       ++ ": "

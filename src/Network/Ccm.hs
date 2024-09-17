@@ -10,6 +10,8 @@ module Network.Ccm
   , cccTransmissionBatch
   , cccCacheMode
   , cccPersistMode
+  , cccHeartbeatMicros
+  , cccRetransMicros
   , CacheMode (..)
   , PostCount
   , NodeId (..)
